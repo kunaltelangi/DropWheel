@@ -1,4 +1,10 @@
-<p align="center"><img src="AppIcon.png" width="128" alt="DropWheel"></p>
+<p align="center">
+  <img
+    src="https://github.com/user-attachments/assets/54ca4b30-b1fe-4089-88b5-b7c9f56ecad7"
+    alt="DropWheel App Icon"
+    width="160"
+  />
+</p>
 
 # DropWheel
 

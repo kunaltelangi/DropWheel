@@ -12,7 +12,7 @@ A radial file converter for macOS. Press **fn** or **⌥Space**, drop files onto
 
 **Nothing else to install.** The tools it needs are packed inside the app.
 
-[**Download for macOS**](https://github.com/YOUR_USERNAME/DropWheel/releases/latest/download/DropWheel.dmg)
+[**Download for macOS**]([https://github.com/YOUR_USERNAME/DropWheel/releases/latest/download/DropWheel.dmg](https://github.com/kunaltelangi/DropWheel/releases/latest/download/DropWheel.dmg))
 
 ## Install
 

@@ -1,70 +1,159 @@
  <p align="center">
-  <img
-    src="https://github.com/user-attachments/assets/54ca4b30-b1fe-4089-88b5-b7c9f56ecad7"
-    alt="DropWheel App Icon"
-    width="160"
-  />
+  <img src="https://github.com/user-attachments/assets/54ca4b30-b1fe-4089-88b5-b7c9f56ecad7" alt="DropWheel App Icon" width="160" />
 </p>
 
-# DropWheel
+<h1 align="center">DropWheel</h1>
 
-A radial file converter for macOS. Press **fn** or **⌥Space**, drop files onto the wheel, click a wedge. Done.
+<p align="center">
+  <strong>A radial file conversion toolkit for macOS.</strong>
+  <br />
+  Convert, compress, and manage files through a simple interactive wheel.
+</p>
 
-**Nothing else to install.** The tools it needs are packed inside the app.
+<p align="center">
+  <a href="https://github.com/kunaltelangi/DropWheel/raw/refs/heads/main/build/DropWheel.dmg">
+    <strong>Download for macOS</strong>
+  </a>
+</p>
 
-[**Download for macOS**](https://github.com/kunaltelangi/DropWheel/raw/refs/heads/main/build/DropWheel.dmg)
+---
 
-## Install
+## Overview
 
-1. Download `DropWheel.dmg` and open it.
-2. Drag **DropWheel** onto **Applications**.
-3. Right-click DropWheel in Applications → **Open** → **Open** (first launch only, because the app is not notarized by Apple).  
-   If macOS still blocks it: System Settings → Privacy & Security → **Open Anyway**.
-4. Allow **Accessibility** and **Input Monitoring** when asked (needed for the fn / ⌥Space shortcut).
-5. Press **fn** or **⌥Space**, drop a file, click a wedge.
+**DropWheel** is a radial file conversion application designed for macOS. It provides a quick way to access common file operations without navigating through multiple applications or complicated menus.
+
+Activate the wheel using **Fn** or **⌥ Space**, drag and drop your files, and select the operation you need.
+
+The application packages its required command-line tools, so most features work without installing additional dependencies.
 
 ## Features
 
-- **Set Size**: compress an image, video, audio file or PDF to an exact KB / MB limit.
-- **Images**: JPG, PNG, HEIC, WebP, TIFF, PDF, rotate, shrink, resize, strip EXIF/GPS info.
-- **Video**: compress, 720p, H.265, MP4/MOV/MKV/WebM/GIF, extract MP3, mute, grab a frame.
-- **Audio**: MP3, M4A, WAV, FLAC, OGG, OPUS, AIFF, normalize, compress.
-- **PDF**: compress (lossless / smart / strong), convert to TXT, split, merge, export all pages to JPG, unlock, grayscale, rotate.
-- **Documents / Markdown**: DOCX, ODT, TXT, RTF, HTML, EPUB, MD.
-- **Archives**: extract ZIP, TAR, 7z, RAR.
-- **Batch processing**: drop many files at once.
-- Results are saved next to the original (or in a folder you choose). Originals are never overwritten.
+### Image Processing
+- Convert between JPG, PNG, HEIC, WebP, TIFF, and PDF.
+- Resize, shrink, and rotate images.
+- Remove EXIF metadata and GPS information.
+- Compress images to a specified file size.
 
-### Optional extras (not included)
+### Video Processing
+- Compress videos and convert to 720p.
+- Support for H.265 encoding.
+- Convert between MP4, MOV, MKV, WebM, and GIF.
+- Extract audio as MP3.
+- Mute videos and capture individual frames.
 
-These require a free program installed separately. DropWheel tells you if one is missing.
+### Audio Processing
+- Convert between MP3, M4A, WAV, FLAC, OGG, OPUS, and AIFF.
+- Normalize audio levels.
+- Compress audio files.
 
-- Spreadsheet / slide / Office-to-PDF conversion: install [LibreOffice](https://www.libreoffice.org).
-- PDF OCR: `brew install ocrmypdf`.
+### PDF Tools
+- Lossless, smart, and strong compression.
+- Convert PDF documents to TXT.
+- Split and merge PDF files.
+- Export all pages as JPG images.
+- Remove owner-password restrictions.
+- Convert to grayscale and rotate pages.
 
-## Build it yourself
+### Document Conversion
+- Support for DOCX, ODT, TXT, RTF, HTML, EPUB, and Markdown.
+- Convert between supported document formats.
 
-Requires Xcode or Command Line Tools (`xcode-select --install`) and [Homebrew](https://brew.sh) on the building Mac.
+### Archive Extraction
+- Extract ZIP, TAR, 7z, and RAR archives.
+
+### Additional Capabilities
+- **Set Size:** Target an exact KB or MB file size for supported image, video, audio, and PDF operations.
+- **Batch Processing:** Process multiple files in one operation.
+- **Flexible Output:** Save results alongside the original files or choose a different destination.
+- **Original File Protection:** Original files are never overwritten.
+
+## Installation
+
+1. Download [`DropWheel.dmg`](https://github.com/kunaltelangi/DropWheel/raw/refs/heads/main/build/DropWheel.dmg).
+2. Open the downloaded DMG file.
+3. Drag **DropWheel** into your Applications folder.
+4. Right-click the application and select **Open**. Confirm **Open** again when prompted.
+5. Grant the requested **Accessibility** and **Input Monitoring** permissions.
+6. Launch DropWheel and use **Fn** or **⌥ Space** to activate the wheel.
+
+**First launch:** DropWheel is not notarized by Apple. If macOS blocks the application, go to **System Settings → Privacy & Security → Open Anyway**.
+
+## Optional Dependencies
+
+Most functionality is available through the tools bundled with the application. A few additional operations require separately installed software.
+
+| Functionality | Dependency |
+|---|---|
+| Spreadsheet, presentation, and Office-to-PDF conversion | [LibreOffice](https://www.libreoffice.org) |
+| PDF Optical Character Recognition (OCR) | `ocrmypdf` |
+
+Install OCR support using Homebrew:
 
 ```bash
-./make-app.sh              # App with bundled tools + DMG (recommended)
-./make-app.sh --no-bundle  # Smaller build using tools installed on the Mac
+brew install ocrmypdf
 ```
 
-The result is in the `build` folder.
+DropWheel will notify you if an optional dependency is unavailable.
 
-> The bundled tools match the Mac that builds the app (Apple Silicon or Intel). Build on an Apple Silicon Mac for Apple Silicon users.
+## Build from Source
+
+### Requirements
+
+- macOS
+- Xcode or Xcode Command Line Tools
+- [Homebrew](https://brew.sh)
+
+Install Command Line Tools if required:
+
+```bash
+xcode-select --install
+```
+
+### Build
+
+Clone the repository:
+
+```bash
+git clone https://github.com/kunaltelangi/DropWheel.git
+cd DropWheel
+```
+
+Build the application:
+
+```bash
+# Recommended: bundle required tools and generate a DMG
+./make-app.sh
+
+# Alternative: use tools already installed on the Mac
+./make-app.sh --no-bundle
+```
+
+The generated application and DMG are placed in the `build` directory.
+
+**Architecture:** Bundled tools are built for the architecture of the Mac used to create the application. Build on Apple Silicon for Apple Silicon distribution, or on Intel for Intel distribution.
 
 ## Permissions
 
-- **Accessibility** and **Input Monitoring**: needed for the global fn / ⌥Space shortcut.
-- If macOS asks again after every update, the app was rebuilt with a different signature. Run it from `/Applications`.
+DropWheel requires the following macOS permissions for its global keyboard shortcuts:
 
-## Notes
+- **Accessibility:** Allows the application to respond to global interactions.
+- **Input Monitoring:** Required for detecting the Fn / ⌥ Space shortcuts.
 
-- Not on the Mac App Store because it needs the sandbox disabled to run its tools.
-- **Unlock** only removes owner-password restrictions (print/copy/edit). It cannot open a PDF that requires a password to view.
+If permissions need to be granted again after an update, check that you are running the application from `/Applications`. Rebuilding the application with a different code signature may also require reauthorizing permissions.
+
+## Important Notes
+
+- DropWheel is not distributed through the Mac App Store because its operation requires disabling App Sandbox to execute its bundled tools.
+- The PDF **Unlock** operation removes owner-password restrictions such as printing, copying, and editing restrictions. It does not open documents that require a password to view.
 
 ## License
 
-DropWheel is MIT licensed (see `LICENSE`). The bundled tools have their own licenses; see `THIRD_PARTY_NOTICES.md`.
+DropWheel is released under the **MIT License**. See [`LICENSE`](LICENSE) for details.
+
+Third-party bundled tools are distributed under their respective licenses. See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+
+---
+
+<p align="center">
+  <sub>Built for macOS · Open Source · MIT License</sub>
+</p>

@@ -20,7 +20,7 @@
   <img alt="Platform" src="https://img.shields.io/badge/platform-macOS%2014%2B-lightgrey" />
   <img alt="Language" src="https://img.shields.io/badge/Swift-5-orange" />
   <img alt="UI" src="https://img.shields.io/badge/UI-SwiftUI-blue" />
-  <img alt="License" src="https://img.shields.io/badge/license-MIT-green" />
+  <img alt="License" src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-orange" />
 </p>
 
 ---
@@ -254,12 +254,18 @@ Issues and pull requests are welcome.
 
 ## License
 
-DropWheel is released under the **MIT License**. See [`LICENSE`](LICENSE).
+DropWheel is **source-available** under the [PolyForm Noncommercial License 1.0.0](LICENSE).
+
+- **Allowed, free of charge:** personal use, hobby projects, study and research, and use by charities, schools, public research bodies, and government institutions. You may also modify and share it for these purposes.
+- **Not allowed without permission:** any commercial use, such as using it for paid work in a business, bundling it into a paid product, or selling it.
+- **Commercial licensing:** to request permission, open an issue on this repository.
+
+This is not an OSI-approved open source license.
 
 Bundled third-party tools are distributed under their own licenses. See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 ---
 
 <p align="center">
-  <sub>Built for macOS · Open Source · MIT License</sub>
+  <sub>Built for macOS · Source-available · PolyForm Noncommercial 1.0.0</sub>
 </p>

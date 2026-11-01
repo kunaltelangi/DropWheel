@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/54ca4b30-b1fe-4089-88b5-b7c9f56ecad7" alt="DropWheel App Icon" width="160" />
+  <img src="assets/AppIcon.svg" alt="DropWheel app icon" width="160" />
 </p>
 
 <h1 align="center">DropWheel</h1>
@@ -12,6 +12,8 @@
 
 <p align="center">
   <a href="https://github.com/kunaltelangi/DropWheel/raw/refs/heads/main/build/DropWheel.dmg"><strong>Download for macOS</strong></a>
+  &nbsp;·&nbsp;
+  <a href="https://kunaltelangi.github.io/DropWheel/"><strong>Website</strong></a>
   &nbsp;·&nbsp;
   <a href="docs/FEATURES.md"><strong>Full feature reference</strong></a>
 </p>
@@ -44,11 +46,11 @@
 
 ## Overview
 
-DropWheel is a menu bar utility that puts the everyday file operations (convert, compress, resize, merge, split, extract) behind a single radial menu. It removes the need to open a separate app, website, or terminal for each small job.
+DropWheel is a menu bar utility that puts the everyday file operations (convert, compress, resize, merge, split, extract, rename, zip) behind a single radial menu. It removes the need to open a separate app, website, or terminal for each small job.
 
 1. Press **Fn** or **⌥ Space** anywhere in macOS.
 2. A wheel appears centered on the screen your cursor is on.
-3. Drag one or more files onto it.
+3. Drag one or more files onto it, or press **⌘V** to load files or a screenshot from the clipboard.
 4. The wheel shows only the actions that make sense for that file type. Click one, or press its number key.
 
 All processing runs **locally** on your Mac using native macOS frameworks and battle-tested command-line tools (FFmpeg, Ghostscript, qpdf, Pandoc, and others). Files are never uploaded anywhere.
@@ -57,10 +59,10 @@ All processing runs **locally** on your Mac using native macOS frameworks and ba
 
 - **Context-aware wheel.** The wedges change with the dropped file type: images, video, audio, PDF, documents, Markdown, spreadsheets, slides, archives, and JSON.
 - **Set Size.** Compress an image, video, audio file, or PDF to a target size you choose (for example, "under 500 KB").
-- **Batch processing.** Drop many files of the same type and run one action across all of them.
+- **Batch processing.** Drop many files and run one action across all of them. Rename, Zip, Sort, AirDrop, Mail, and Copy work on any mix of file types.
+- **Built-in tools.** Text recognition (OCR) and background removal on images, plus SHA-256 checksums, all using native macOS frameworks.
 - **Non-destructive.** Originals are never overwritten. Outputs get a suffix and a unique name. Optionally move originals to Trash after a successful conversion.
-- **Keyboard-first.** Open with a hotkey, choose with `1`–`9` / `0`, close with `Esc`.
-- **Self-contained.** The packaged app bundles its CLI tools, so most features work with zero installs.
+- **Keyboard-first.** Open with a hotkey, choose with `1`–`9` / `0`, paste with `⌘V`, close with `Esc`.
 - **Cancellable.** Click the center of the wheel during a job to stop it immediately.
 - **Smart no-op.** Compression actions that would not make the file smaller keep your original and tell you so.
 
@@ -70,7 +72,7 @@ A quick summary. See [docs/FEATURES.md](docs/FEATURES.md) for every action, the 
 
 | Input type | Operations |
 |---|---|
-| **Images** (JPG, PNG, HEIC, WebP, TIFF, GIF, BMP, and more) | Set Size · convert to JPG / PNG / HEIC / WebP / PDF / TIFF · Strip metadata · Rotate · Shrink · Resize to 1080 |
+| **Images** (JPG, PNG, HEIC, WebP, TIFF, GIF, BMP, and more) | Set Size · convert to JPG / PNG / HEIC / WebP / PDF / TIFF · Copy Text (OCR) · No Background · Rotate · Shrink · Resize to 1080 · Combine to PDF (multiple images) |
 | **Video** (MP4, MOV, MKV, AVI, WebM, and more) | Set Size · Compress · 720p · H.265 · convert to MP4 / MOV / MKV / WebM / GIF · Extract MP3 · Mute · Grab first frame as PNG |
 | **Audio** (MP3, M4A, WAV, FLAC, OGG, OPUS, AIFF, and more) | Set Size · convert to MP3 / M4A / WAV / FLAC / OGG / OPUS / AIFF · Normalize · Compress |
 | **PDF** | Set Size · Lossless / Smart / Strong compression · To DOCX · To TXT · Split · All Pages to JPG · Unlock · Grayscale · Rotate · OCR · Merge (multiple PDFs) |
@@ -78,9 +80,24 @@ A quick summary. See [docs/FEATURES.md](docs/FEATURES.md) for every action, the 
 | **Markdown** | Convert to DOCX / ODT / HTML / EPUB / RTF / TXT |
 | **Spreadsheets** (XLS, XLSX, ODS, CSV, TSV) | Convert to PDF / XLSX / CSV / ODS / HTML |
 | **Slides** (PPT, PPTX, ODP) | Convert to PDF / PPTX / ODP, export slide 1 as PNG |
-| **Archives** (ZIP, TAR, GZ, TGZ, BZ2, XZ, 7Z, RAR) | Extract |
-| **JSON** | Pretty-print · Minify · Zip |
-| **Anything else, including folders** | Zip |
+| **Archives** (ZIP, TAR, GZ, TGZ, BZ2, XZ, 7Z, RAR) | Extract · Checksum |
+| **JSON** | Pretty-print · Minify · Checksum |
+| **Anything else, including folders** | Checksum (files only) |
+
+### Actions available for every file type
+
+These are added as the last wedges of every wheel and work on whole selections, whatever the file types.
+
+| Action | Description |
+|---|---|
+| **Clean Info** | Removes location, camera, author, and date metadata. Available for supported image, video, audio, and Office formats. |
+| **Rename** | Batch rename with `{name}`, `{n}` (counter), and `{date}` tokens, plus an optional "clean names" mode. |
+| **Zip / Zip All** | Archive the selection into one `.zip`. |
+| **Sort Type / Sort Date** | Tidy multiple files, or the contents of a dropped folder, into sub-folders by type or by month. |
+| **AirDrop / Mail** | Hand the selection to the macOS share service. |
+| **Copy** | Put the files on the clipboard so you can paste them into Finder, Slack, Mail, and more. |
+
+When a wheel has more than 10 actions, it shows 9 per page plus a **More ›** wedge that flips to the next page.
 
 ## Installation
 
@@ -99,16 +116,16 @@ A quick summary. See [docs/FEATURES.md](docs/FEATURES.md) for every action, the 
 ### The basic flow
 
 1. **Open** the wheel with **Fn** or **⌥ Space** (or the menu bar icon → *Show Wheel*).
-2. **Drop** one or more files onto the wheel.
+2. **Drop** one or more files onto the wheel, or press **⌘V** to paste copied files or a screenshot.
 3. **Pick** an action by clicking a wedge or pressing its number.
-4. **Wait** for the center to show a checkmark. The result is revealed in Finder automatically, and the wheel closes itself.
+4. **Wait** for the center to show a checkmark. The result is revealed in Finder (if enabled) and the wheel closes itself.
 
 ### Wedge colors
 
 | Color | Meaning |
 |---|---|
 | Neutral / blue on hover | A **conversion** or utility action |
-| Green | A **compression** action (output is guaranteed not to be larger than the input) |
+| Green | A **compression** action (output is never larger than the input) |
 
 ### Keyboard shortcuts
 
@@ -116,15 +133,16 @@ A quick summary. See [docs/FEATURES.md](docs/FEATURES.md) for every action, the 
 |---|---|
 | `Fn` or `⌥ Space` | Open / close the wheel |
 | `1` – `9`, `0` | Run the 1st–9th action, or `0` for the 10th |
+| `⌘V` | Load copied files, or a screenshot from the clipboard (saved to Downloads as `Clipboard.png`) |
 | `H` or `/` | Toggle the help card |
-| `Esc` | Go back (from the Set Size card) or close the wheel |
+| `Esc` | Go back (from the Set Size or Rename card) or close the wheel |
 | Click wheel center | Cancel a running job, or return to the idle state |
 
 ### Multiple files
 
-- All dropped files are processed with the same action, in filename order.
-- The wheel is built from the **first file's type**. Files of a different type are skipped, and the result note tells you how many were skipped.
-- Dropping two or more PDFs adds a **Merge** action as the first wedge.
+- Compression and conversion actions process every file of the **same type as the first dropped file**, in filename order. Files of a different type are skipped, and the result note tells you how many.
+- Batch tools (Rename, Zip, Sort, AirDrop, Mail, Copy) use **all** dropped files regardless of type.
+- Dropping two or more PDFs adds a **Merge** action, and two or more images add **Combine to PDF**, as the first wedge.
 
 ## Settings
 
@@ -133,8 +151,10 @@ Everything lives in the menu bar icon:
 | Setting | Description |
 |---|---|
 | **Launch at login** | Registers DropWheel as a login item. |
-| **Move original to Trash after converting** | After a successful run the source file is moved to Trash (never permanently deleted). Not applied to Merge or to actions that output a folder. |
+| **Move original to Trash after converting** | After a successful run the source file is moved to Trash (never permanently deleted). Not applied to Merge, Combine to PDF, or actions that output a folder. |
 | **Play sound when done** | Glass on success, Funk on warning, Basso on failure. |
+| **Copy result to clipboard** | Places the output files on the clipboard when a job finishes. |
+| **Reveal result in Finder** | Selects the output in Finder when a job finishes (on by default). |
 | **Save results in…** | Choose a fixed output folder. |
 | **Save results next to original** | Reset to the default behavior. |
 | **Accessibility / Input Monitoring permission…** | Shortcuts to the matching System Settings panes. |
@@ -152,7 +172,7 @@ The packaged app bundles most tools. A few features rely on third-party software
 | Higher-fidelity PDF → DOCX | `pdf2docx` | `pipx install pdf2docx` (used automatically if found) |
 | JSON Pretty / Minify | `python3` | Included with Xcode Command Line Tools |
 
-DropWheel shows a clear message in the wheel if a required tool is missing.
+Image text recognition (**Copy Text**), **No Background**, and **Checksum** need no extra software: they use Apple's Vision and CryptoKit frameworks. DropWheel shows a clear message in the wheel if a required tool is missing.
 
 ## Permissions
 
@@ -184,7 +204,7 @@ cd DropWheel
 ./make-app.sh --no-bundle
 ```
 
-Output goes to the `build/` directory.
+Output goes to the `build/` directory. The build produces a universal (arm64 + x86_64) app, generates its icon (the same design as [`assets/AppIcon.svg`](assets/AppIcon.svg)), ad-hoc signs it, and packs a DMG.
 
 > **Architecture:** Bundled tools are built for the Mac that runs the script. Build on Apple Silicon to ship for Apple Silicon, and on Intel to ship for Intel.
 
@@ -201,11 +221,11 @@ DropWheel is a SwiftUI app with a small AppKit layer for the global behavior.
 | Layer | Responsibility |
 |---|---|
 | **App / menu bar** | `MenuBarExtra` UI, persistent settings via `@AppStorage` / `UserDefaults`, login item via `SMAppService`. |
-| **AppDelegate + `WheelPanel`** | A borderless, non-activating floating `NSPanel` that appears on all Spaces. Global and local `NSEvent` monitors handle Fn, ⌥ Space, Esc, and number keys. |
-| **Action catalog** | `kind(of:)` classifies each file; `actions(for:)` returns a list of `WheelAction` values. Each action declares its tool, arguments, output extension, suffix, and flags. |
+| **AppDelegate + `WheelPanel`** | A borderless, non-activating floating `NSPanel` that appears on all Spaces. Global and local `NSEvent` monitors handle Fn, ⌥ Space, ⌘V, Esc, and number keys. |
+| **Action catalog** | `kind(of:)` classifies each file; `actions(for:)` returns a list of `WheelAction` values. Each action declares its tool, arguments, output extension, suffix, and flags. Native actions run in-process; batch actions work on the whole selection. |
 | **Runner** | `runTool` launches tools as child `Process`es with a prepared `PATH`, captures output, and supports cancellation through a thread-safe `Job`. `convert` handles temp directories, unique output names, and the "no gain" check. |
 | **Target-size engine** | Dedicated compressors per media type (ImageIO, Ghostscript, two-pass FFmpeg) that search for the best quality at or below the target. |
-| **Wheel UI** | A state machine (`idle`, `help`, `choosing`, `sizing`, `running`, `done`, `failed`) renders wedges, hit-testing, hover, and the Set Size card. |
+| **Wheel UI** | A state machine (`idle`, `help`, `choosing`, `sizing`, `renaming`, `running`, `done`, `failed`) renders wedges, hit-testing, hover, pagination, and the Set Size and Rename cards. |
 
 Tool lookup order: absolute path → tools bundled in the app (`Resources/bin`) → `/usr/bin`, `/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`.
 
@@ -236,11 +256,12 @@ A different code signature is treated as a new app by macOS. Re-grant the permis
 
 - Not notarized, so the first launch requires the Open Anyway flow.
 - Not sandboxed and therefore not eligible for the Mac App Store.
-- Only files of the **same type as the first dropped file** are processed in a batch.
-- *Strip Info* is limited to JPG, PNG, and WebP inputs.
+- Conversion and compression actions only process files of the **same type as the first dropped file**.
+- *Clean Info* only appears when every selected file is a supported format (JPG, PNG, WebP, TIFF, GIF, HEIC, MP4, MOV, M4V, M4A, MP3, FLAC, WAV, DOCX, XLSX, PPTX, ODT, ODS, ODP).
 - *Unlock* removes owner-password restrictions only. It cannot open files that need a password to view.
 - Set Size always outputs a fixed format per type (JPG, MP4, MP3, PDF).
 - Video *Frame→PNG* exports the first frame only.
+- *No Background* uses Apple's subject detection and needs macOS 14 or later.
 
 ## Contributing
 
@@ -248,7 +269,7 @@ Issues and pull requests are welcome.
 
 1. Fork the repo and create a feature branch.
 2. Build with `./make-app.sh --no-bundle` for a fast iteration loop.
-3. To add a new action, add a `WheelAction` to the relevant case in `actions(for:)`, using the helper constructors (`ff`, `sips`, `gs`, `lo`, `pd`, `textutil`) where possible.
+3. To add a new action, add a `WheelAction` to the relevant case in `actions(for:)`, using the helper constructors (`ff`, `sips`, `gs`, `lo`, `pd`, `textutil`, `nat`, `bat`) where possible.
 4. Test with a single file, a batch, and a missing-tool scenario.
 5. Open a PR describing the change and the file types you tested.
 

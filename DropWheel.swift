@@ -4,8 +4,13 @@ import AppKit
 import ImageIO
 import ServiceManagement
 import ApplicationServices
+import Vision
+import PDFKit
+import CoreImage
+import CryptoKit
 
-// DropWheel requires macOS 14+, Swift 5 language mode, App Sandbox OFF.
+// DropWheel — requires macOS 14+, Swift 5 language mode, App Sandbox OFF.
+// Single file: this is the ONLY file that should contain @main.
 
 extension Notification.Name {
     static let wheelReset = Notification.Name("dropwheel.reset")
@@ -13,9 +18,38 @@ extension Notification.Name {
     static let wheelPick  = Notification.Name("dropwheel.pick")
     static let wheelClose = Notification.Name("dropwheel.close")
     static let wheelEsc   = Notification.Name("dropwheel.esc")
+    static let wheelPaste = Notification.Name("dropwheel.paste")
 }
 
-// MARK: App (menu bar + hotkeys)
+// MARK: Design tokens
+
+/// Thin specular rim that makes glass surfaces read as physical edges (light from the top-left).
+let glassRim = LinearGradient(
+    colors: [Color.white.opacity(0.55), Color.white.opacity(0.06), Color.white.opacity(0.22)],
+    startPoint: .topLeading, endPoint: .bottomTrailing)
+
+/// Soft sheen across the upper half of a glass surface.
+let glassSheen = LinearGradient(
+    colors: [Color.white.opacity(0.14), Color.clear, Color.black.opacity(0.05)],
+    startPoint: .top, endPoint: .bottom)
+
+extension View {
+    /// Floating glass card: material, sheen, specular rim and layered shadows.
+    func glassCard(_ radius: CGFloat = 24) -> some View {
+        self
+            .background(
+                ZStack {
+                    RoundedRectangle(cornerRadius: radius, style: .continuous).fill(.regularMaterial)
+                    RoundedRectangle(cornerRadius: radius, style: .continuous).fill(glassSheen)
+                }
+            )
+            .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(glassRim, lineWidth: 0.8))
+            .shadow(color: .black.opacity(0.30), radius: 30, y: 14)
+            .shadow(color: .black.opacity(0.10), radius: 2, y: 1)
+    }
+}
+
+// MARK: - App (menu bar + hotkeys)
 
 @main
 struct DropWheelApp: App {
@@ -23,6 +57,8 @@ struct DropWheelApp: App {
     @State private var loginOn = SMAppService.mainApp.status == .enabled
     @AppStorage("trashOriginal") private var trashOriginal = false
     @AppStorage("sound") private var sound = true
+    @AppStorage("copyResult") private var copyResult = false
+    @AppStorage("reveal") private var reveal = true
 
     var body: some Scene {
         MenuBarExtra("DropWheel", systemImage: "circle.hexagongrid.fill") {
@@ -36,6 +72,8 @@ struct DropWheelApp: App {
                 }
             Toggle("Move original to Trash after converting", isOn: $trashOriginal)
             Toggle("Play sound when done", isOn: $sound)
+            Toggle("Copy result to clipboard", isOn: $copyResult)
+            Toggle("Reveal result in Finder", isOn: $reveal)
             Divider()
             Button("Save results in…") { delegate.chooseFolder() }
             Button("Save results next to original") { UserDefaults.standard.removeObject(forKey: "outDir") }
@@ -59,7 +97,8 @@ final class WheelPanel: NSPanel {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var panel: WheelPanel!
     var fnDown = false
-    static let panelSize: CGFloat = 500
+    private var generation = 0          // invalidates a pending fade-out if the wheel is re-opened
+    static let panelSize: CGFloat = 520
 
     func applicationDidFinishLaunching(_ n: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -100,6 +139,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if e.keyCode == 49 && e.modifierFlags.contains(.option) { self.toggle(); return nil }
             // Typing in a text field (target size): never treat keys as shortcuts.
             if NSApp.keyWindow?.firstResponder is NSText { return e }
+            // ⌘V: load files (or a screenshot) from the clipboard.
+            if e.modifierFlags.contains(.command), e.charactersIgnoringModifiers?.lowercased() == "v" {
+                NotificationCenter.default.post(name: .wheelPaste, object: nil); return nil
+            }
             let plain = e.modifierFlags.intersection([.command, .option, .control]).isEmpty
             if plain, let c = e.charactersIgnoringModifiers?.lowercased() {
                 if c == "h" || c == "/" {
@@ -125,6 +168,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func toggle() { panel.isVisible ? hide() : show() }
 
     func show() {
+        generation += 1
+        let wasVisible = panel.isVisible
         NotificationCenter.default.post(name: .wheelReset, object: nil)
         let m = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { NSMouseInRect(m, $0.frame, false) } ?? NSScreen.main
@@ -132,11 +177,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let h = AppDelegate.panelSize / 2
             panel.setFrameOrigin(NSPoint(x: f.midX - h, y: f.midY - h))
         }
+        if !wasVisible { panel.alphaValue = 0 }
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.18
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.animator().alphaValue = 1
+        }
     }
 
-    func hide() { panel.orderOut(nil) }
+    func hide() {
+        guard panel.isVisible else { return }
+        generation += 1
+        let g = generation
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.16
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            panel.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            guard let self, g == self.generation else { return }
+            self.panel.orderOut(nil)
+            self.panel.alphaValue = 1
+        })
+    }
 
     func chooseFolder() {
         NSApp.activate(ignoringOtherApps: true)
@@ -167,15 +231,41 @@ struct WheelAction: Identifiable {
     let temp: Bool
     let compress: Bool
     let sizing: Bool        // opens the "target size" card instead of running directly
+    let renaming: Bool      // opens the rename card
+    let native: ((_ input: String, _ output: URL, _ job: Job) -> String?)?   // per-file, runs inside the app; returns an error or nil
+    let batch: ((_ files: [URL], _ job: Job) -> BatchResult)?                // works on the whole selection, any mix of types
     let args: (_ input: String, _ output: String) -> [String]
+}
+
+struct BatchResult {
+    var note = ""
+    var outs: [URL] = []
+    var error: String? = nil
 }
 
 func act(_ title: String, _ icon: String, _ tool: String, brew: String = "", ext: String?,
          suffix: String = "", temp: Bool = false, compress: Bool = false, sizing: Bool = false,
-         args: @escaping (String, String) -> [String]) -> WheelAction {
+         renaming: Bool = false,
+         args: @escaping (String, String) -> [String],
+         native: ((String, URL, Job) -> String?)? = nil,
+         batch: ((_ files: [URL], _ job: Job) -> BatchResult)? = nil) -> WheelAction {
     WheelAction(title: title, icon: icon, tool: tool, brew: brew, ext: ext, suffix: suffix,
-                temp: temp, compress: compress, sizing: sizing, args: args)
+                temp: temp, compress: compress, sizing: sizing, renaming: renaming,
+                native: native, batch: batch, args: args)
 }
+
+/// An action implemented inside the app (no external tool).
+func nat(_ title: String, _ icon: String, ext: String?, suffix: String = "",
+         _ f: @escaping (String, URL, Job) -> String?) -> WheelAction {
+    act(title, icon, "native", ext: ext, suffix: suffix, args: { _, _ in [] }, native: f)
+}
+
+/// An action that works on the whole selection at once (any mix of file types).
+func bat(_ title: String, _ icon: String, _ f: @escaping ([URL], Job) -> BatchResult) -> WheelAction {
+    act(title, icon, "batch", ext: nil, args: { _, _ in [] }, batch: f)
+}
+
+let moreID = "More ›"
 
 let soffice = "/Applications/LibreOffice.app/Contents/MacOS/soffice"
 
@@ -227,7 +317,7 @@ func actions(for url: URL) -> [WheelAction] {
     e = ["jpeg": "jpg", "tif": "tiff", "htm": "html", "heif": "heic", "markdown": "md", "aif": "aiff"][e] ?? e
     let h264 = ["-vcodec", "libx264", "-crf", "20", "-pix_fmt", "yuv420p", "-acodec", "aac"]
     let small = ["-vcodec", "libx264", "-crf", "26", "-preset", "fast", "-pix_fmt", "yuv420p", "-acodec", "aac", "-b:a", "128k"]
-    let zip = act("Zip", "doc.zipper", "ditto", ext: "zip") { i, o in ["-c", "-k", "--keepParent", i, o] }
+    let checksum = nat("Checksum", "number.circle", ext: "txt", suffix: "-checksum", nativeHash)
 
     let list: [WheelAction]
     switch kind(of: url) {
@@ -240,9 +330,8 @@ func actions(for url: URL) -> [WheelAction] {
             ff("To WebP", "globe", "webp") { i, o in ["-y", "-i", i, "-q:v", "85", o] },
             sips("To PDF", "doc.richtext", "pdf", ext: "pdf"),
             sips("To TIFF", "photo.on.rectangle", "tiff", ext: "tiff"),
-            // Removes EXIF: GPS location, camera, date. Great before sharing photos online.
-            ff("Strip Info", "location.slash", nil, suffix: "-clean") { i, o in
-                ["-y", "-i", i, "-map_metadata", "-1", "-c", "copy", o] },
+            nat("Copy Text", "text.viewfinder", ext: "txt", suffix: "-text", nativeOCR),
+            nat("No Background", "person.crop.rectangle", ext: "png", suffix: "-nobg", nativeRemoveBG),
             act("Rotate", "rotate.right", "sips", ext: nil, suffix: "-rotated") { i, o in ["-r", "90", i, "--out", o] },
             act("Shrink", "arrow.down.right.and.arrow.up.left", "sips", ext: "jpg", suffix: "-small", compress: true) { i, o in
                 ["-s", "format", "jpeg", "-s", "formatOptions", "70", "--resampleHeightWidthMax", "2400", i, "--out", o] },
@@ -336,25 +425,24 @@ func actions(for url: URL) -> [WheelAction] {
                 lo("To ODP", "rectangle.on.rectangle.angled", "odp"), lo("Slide 1→PNG", "photo", "png")]
     case .archive:
         if e == "zip" {
-            list = [act("Extract", "archivebox", "ditto", ext: "") { i, o in ["-x", "-k", i, o] }]
+            list = [act("Extract", "archivebox", "ditto", ext: "") { i, o in ["-x", "-k", i, o] }, checksum]
         } else if e == "7z" || e == "rar" {
-            list = [act("Extract", "archivebox", "7zz", brew: "sevenzip", ext: "") { i, o in ["x", i, "-o" + o, "-y"] }]
+            list = [act("Extract", "archivebox", "7zz", brew: "sevenzip", ext: "") { i, o in ["x", i, "-o" + o, "-y"] }, checksum]
         } else {
-            list = [act("Extract", "archivebox", "sh", ext: "") { i, o in ["-c", "mkdir -p \"$2\" && tar -xf \"$1\" -C \"$2\"", "_", i, o] }]
+            list = [act("Extract", "archivebox", "sh", ext: "") { i, o in ["-c", "mkdir -p \"$2\" && tar -xf \"$1\" -C \"$2\"", "_", i, o] }, checksum]
         }
     case .data:
         list = [
             act("Pretty", "text.alignleft", "sh", ext: nil, suffix: "-pretty") { i, o in ["-c", "python3 -m json.tool \"$1\" > \"$2\"", "_", i, o] },
             act("Minify", "arrow.down.right.and.arrow.up.left", "sh", ext: nil, suffix: "-min") { i, o in
                 ["-c", "python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])), separators=(\",\", \":\")))' \"$1\" > \"$2\"", "_", i, o] },
-            zip
+            checksum
         ]
     case .other:
-        list = [zip]
+        let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+        list = isDir ? [] : [checksum]
     }
     return list.filter { !($0.suffix.isEmpty && $0.ext == e) }
-        // "Strip Info" uses ffmpeg stream copy, which is only reliable for these formats.
-        .filter { $0.id != "Strip Info" || ["jpg", "png", "webp"].contains(e) }
 }
 
 func kind(of url: URL) -> FileKind {
@@ -384,7 +472,42 @@ func wheelList(_ files: [URL]) -> [WheelAction] {
         l.insert(act("Merge", "square.on.square", "qpdf", brew: "qpdf", ext: "pdf", suffix: "-merged") { i, o in
             ["--empty", "--pages"] + i.components(separatedBy: "\u{1}") + ["--", o] }, at: 0)
     }
-    return l
+    if files.count > 1 && files.allSatisfy({ kind(of: $0) == .image }) {
+        l.insert(nat("Combine to PDF", "doc.on.doc", ext: "pdf", suffix: "-combined", nativeImagesToPDF), at: 0)
+    }
+    return l + universalActions(files)
+}
+
+/// Formats ExifTool can strip metadata from reliably.
+let cleanableExts: Set<String> = ["jpg", "png", "webp", "tiff", "gif", "heic", "mp4", "mov", "m4v", "m4a",
+                                  "mp3", "flac", "wav", "docx", "xlsx", "pptx", "odt", "ods", "odp"]
+
+/// Tools that work on ANY file type (always the last wedges of the wheel).
+func universalActions(_ files: [URL]) -> [WheelAction] {
+    func norm(_ u: URL) -> String {
+        let e = u.pathExtension.lowercased()
+        return ["jpeg": "jpg", "tif": "tiff", "heif": "heic"][e] ?? e
+    }
+    var u: [WheelAction] = []
+    if files.allSatisfy({ cleanableExts.contains(norm($0)) }) {
+        // Removes location, camera, author, dates… Great before sharing a file publicly.
+        u.append(act("Clean Info", "location.slash", "exiftool", brew: "exiftool", ext: nil, suffix: "-clean") { i, o in
+            ["-all=", "-o", o, i] })
+    }
+    u.append(act("Rename", "pencil", "-", ext: nil, renaming: true, args: { _, _ in [] }))
+    u.append(bat(files.count > 1 ? "Zip All" : "Zip", "doc.zipper") { f, j in zipFiles(f, job: j) })
+    let single = files.count == 1
+    let isDir = single && ((try? files[0].resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true)
+    if !single || isDir {
+        u.append(bat("Sort Type", "folder") { f, j in sortFiles(f, byDate: false, job: j) })
+        u.append(bat("Sort Date", "calendar") { f, j in sortFiles(f, byDate: true, job: j) })
+    }
+    u.append(bat("AirDrop", "square.and.arrow.up") { f, _ in
+        shareBatch(.sendViaAirDrop, name: "AirDrop", note: "Pick a device", f) })
+    u.append(bat("Mail", "envelope") { f, _ in
+        shareBatch(.composeEmail, name: "Mail", note: "Opening Mail", f) })
+    u.append(bat("Copy", "doc.on.clipboard") { f, _ in copyFiles(f) })
+    return u
 }
 
 // MARK: - Helpers
@@ -393,28 +516,9 @@ func playSound(_ name: String) {
     if UserDefaults.standard.object(forKey: "sound") as? Bool ?? true { NSSound(named: name)?.play() }
 }
 
-/// Folder inside the app that holds the packed tools (ffmpeg, Ghostscript, qpdf, ...).
-/// nil when the app was built without packed tools (developer / Xcode builds).
-let bundledBin: String? = {
-    guard let r = Bundle.main.resourcePath else { return nil }
-    let p = r + "/bin"
-    return FileManager.default.fileExists(atPath: p) ? p : nil
-}()
-
-/// Message shown when a tool can't be found.
-func missingToolText(_ formula: String, title: String = "") -> String {
-    if bundledBin == nil && !formula.isEmpty { return "Missing tool. In Terminal run: brew install \(formula)" }
-    if formula.hasPrefix("--cask libreoffice") { return "Needs LibreOffice (free at libreoffice.org)" }
-    if formula == "ocrmypdf" || formula.contains("pdf2docx") {
-        return title.isEmpty ? "This feature needs a tool that isn't included" : "\(title) needs a tool that isn't included"
-    }
-    return "A built-in tool is missing. Please reinstall DropWheel."
-}
-
 func locate(_ tool: String) -> String? {
     let fm = FileManager.default
     if tool.hasPrefix("/") { return fm.isExecutableFile(atPath: tool) ? tool : nil }
-    if let b = bundledBin, fm.isExecutableFile(atPath: b + "/" + tool) { return b + "/" + tool }
     for dir in ["/usr/bin/", "/bin/", "/opt/homebrew/bin/", "/usr/local/bin/", NSHomeDirectory() + "/.local/bin/"] {
         if fm.isExecutableFile(atPath: dir + tool) { return dir + tool }
     }
@@ -461,16 +565,58 @@ func lastLine(_ s: String) -> String {
     return String(l.suffix(90))
 }
 
+func copyText(_ s: String) {
+    DispatchQueue.main.async {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(s, forType: .string)
+    }
+}
+
+/// Files copied in Finder, or an image on the clipboard (saved to Downloads as Clipboard.png).
+func pasteboardFiles() -> [URL] {
+    let pb = NSPasteboard.general
+    if let urls = pb.readObjects(forClasses: [NSURL.self],
+                                 options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
+        return urls
+    }
+    if let img = NSImage(pasteboard: pb), let tiff = img.tiffRepresentation,
+       let rep = NSBitmapImageRep(data: tiff),
+       let png = rep.representation(using: .png, properties: [:]) {
+        let fm = FileManager.default
+        let dir = fm.urls(for: .downloadsDirectory, in: .userDomainMask).first ?? fm.temporaryDirectory
+        var f = dir.appendingPathComponent("Clipboard.png")
+        var n = 2
+        while fm.fileExists(atPath: f.path) {
+            f = dir.appendingPathComponent("Clipboard \(n).png")
+            n += 1
+        }
+        do { try png.write(to: f); return [f] } catch { return [] }
+    }
+    return []
+}
+
 // MARK: - Wedge shape
 
+/// A ring segment with rounded corners and a constant-width gap to its neighbours.
+/// Built by shrinking the segment and stroking it with a round line join (stroke width = 2 × `round`),
+/// so the final silhouette is the shrunken shape expanded by `round`.
 struct Wedge: Shape {
     var start: Angle, end: Angle
     var inner: CGFloat, outer: CGFloat
+    var gap: CGFloat = 3
+    var round: CGFloat = 7
+
     func path(in rect: CGRect) -> Path {
         let c = CGPoint(x: rect.midX, y: rect.midY)
+        let ro = outer - round
+        let ri = inner + round
+        let d = gap / 2 + round                          // distance of each side edge from the radial line
+        let ao = asin(min(d / ro, 1))
+        let ai = asin(min(d / ri, 1))
+        let s = start.radians, e = end.radians
         var p = Path()
-        p.addArc(center: c, radius: outer, startAngle: start, endAngle: end, clockwise: false)
-        p.addArc(center: c, radius: inner, startAngle: end, endAngle: start, clockwise: true)
+        p.addArc(center: c, radius: ro, startAngle: .radians(s + ao), endAngle: .radians(e - ao), clockwise: false)
+        p.addArc(center: c, radius: ri, startAngle: .radians(e - ai), endAngle: .radians(s + ai), clockwise: true)
         p.closeSubpath()
         return p
     }
@@ -514,15 +660,7 @@ func runTool(_ path: String, _ args: [String], job: Job) -> (status: Int32, out:
     p.executableURL = URL(fileURLWithPath: path)
     p.arguments = args
     var env = ProcessInfo.processInfo.environment
-    var pathParts = ["/opt/homebrew/bin", "/usr/local/bin"]
-    if let b = bundledBin { pathParts.insert(b, at: 0) }
-    env["PATH"] = pathParts.joined(separator: ":") + ":" + (env["PATH"] ?? "/usr/bin:/bin")
-    // Ghostscript packed inside the app needs to find its own resource files.
-    if let r = Bundle.main.resourcePath, FileManager.default.fileExists(atPath: r + "/gs") {
-        let g = r + "/gs"
-        env["GS_LIB"] = [g + "/Resource/Init", g + "/lib", g + "/Resource/Font",
-                         g + "/iccprofiles", g + "/fonts"].joined(separator: ":")
-    }
+    env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
     p.environment = env
     p.standardInput = FileHandle.nullDevice
     p.standardOutput = (try? FileHandle(forWritingTo: outURL)) ?? FileHandle.nullDevice
@@ -537,6 +675,309 @@ func runTool(_ path: String, _ args: [String], job: Job) -> (status: Int32, out:
     return (p.terminationStatus, o, e)
 }
 
+// MARK: - Native actions (no external tools)
+
+func loadCG(_ url: URL, maxSize: Int) -> CGImage? {
+    guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+          let p = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
+          let w = p[kCGImagePropertyPixelWidth] as? Int,
+          let h = p[kCGImagePropertyPixelHeight] as? Int else { return nil }
+    let o: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
+                              kCGImageSourceCreateThumbnailWithTransform: true,
+                              kCGImageSourceThumbnailMaxPixelSize: min(max(w, h), maxSize),
+                              kCGImageSourceShouldCacheImmediately: true]
+    return CGImageSourceCreateThumbnailAtIndex(src, 0, o as CFDictionary)
+}
+
+/// Text recognition (OCR) with Apple Vision. Saves a .txt and copies the text to the clipboard.
+func nativeOCR(_ path: String, _ out: URL, _ job: Job) -> String? {
+    func read(_ cg: CGImage) -> String {
+        let req = VNRecognizeTextRequest()
+        req.recognitionLevel = .accurate
+        req.usesLanguageCorrection = true
+        req.automaticallyDetectsLanguage = true
+        do { try VNImageRequestHandler(cgImage: cg, options: [:]).perform([req]) } catch { return "" }
+        let lines = (req.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+        return lines.joined(separator: "\n")
+    }
+    let url = URL(fileURLWithPath: path)
+    var text = ""
+    if url.pathExtension.lowercased() == "pdf" {
+        guard let doc = PDFDocument(url: url) else { return "Can't open PDF" }
+        for i in 0..<doc.pageCount {
+            if job.cancelled { return "Cancelled" }
+            guard let page = doc.page(at: i) else { continue }
+            let b = page.bounds(for: .mediaBox)
+            let img = page.thumbnail(of: CGSize(width: b.width * 2, height: b.height * 2), for: .mediaBox)
+            if let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+                text += (text.isEmpty ? "" : "\n\n") + read(cg)
+            }
+        }
+    } else {
+        guard let cg = loadCG(url, maxSize: 5000) else { return "Can't read this image" }
+        text = read(cg)
+    }
+    if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "No text found" }
+    do { try text.write(to: out, atomically: true, encoding: .utf8) } catch { return "Couldn't save text" }
+    copyText(text)
+    return nil
+}
+
+/// Cuts out the main subject (macOS 14+). Saves a transparent PNG.
+func nativeRemoveBG(_ path: String, _ out: URL, _ job: Job) -> String? {
+    guard let cg = loadCG(URL(fileURLWithPath: path), maxSize: 4096) else { return "Can't read this image" }
+    let req = VNGenerateForegroundInstanceMaskRequest()
+    let handler = VNImageRequestHandler(cgImage: cg, options: [:])
+    do { try handler.perform([req]) } catch { return "Couldn't analyse image" }
+    guard let res = req.results?.first else { return "No subject found" }
+    guard let buf = try? res.generateMaskedImage(ofInstances: res.allInstances, from: handler,
+                                                  croppedToInstancesExtent: false) else { return "Couldn't cut out subject" }
+    let ctx = CIContext()
+    guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+          let png = ctx.pngRepresentation(of: CIImage(cvPixelBuffer: buf), format: .RGBA8, colorSpace: space)
+    else { return "Couldn't encode PNG" }
+    do { try png.write(to: out) } catch { return "Couldn't save image" }
+    return nil
+}
+
+/// Several images → one PDF (the input is the paths joined with \u{1}).
+func nativeImagesToPDF(_ joined: String, _ out: URL, _ job: Job) -> String? {
+    let doc = PDFDocument()
+    for p in joined.components(separatedBy: "\u{1}") {
+        if job.cancelled { return "Cancelled" }
+        if let img = NSImage(contentsOf: URL(fileURLWithPath: p)), let page = PDFPage(image: img) {
+            doc.insert(page, at: doc.pageCount)
+        }
+    }
+    return (doc.pageCount > 0 && doc.write(to: out)) ? nil : "Couldn't build the PDF"
+}
+
+/// SHA-256 → saved next to the file and copied to the clipboard.
+func nativeHash(_ path: String, _ out: URL, _ job: Job) -> String? {
+    guard let fh = FileHandle(forReadingAtPath: path) else { return "Can't read file" }
+    defer { try? fh.close() }
+    var h = SHA256()
+    while true {
+        if job.cancelled { return "Cancelled" }
+        guard let d = try? fh.read(upToCount: 4_000_000), !d.isEmpty else { break }
+        h.update(data: d)
+    }
+    let hex = h.finalize().map { String(format: "%02x", $0) }.joined()
+    let line = hex + "  " + (path as NSString).lastPathComponent + "\n"
+    do { try line.write(to: out, atomically: true, encoding: .utf8) } catch { return "Couldn't save checksum" }
+    copyText(hex)
+    return nil
+}
+
+// MARK: - Batch tools (any file type)
+
+func isDirectory(_ u: URL) -> Bool {
+    (try? u.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+}
+
+/// Builds a new file name from a pattern. Tokens: {name} original name, {n} counter, {date} file date.
+func renamedName(_ url: URL, index: Int, total: Int, pattern: String, start: Int, slug: Bool) -> String {
+    let base = url.deletingPathExtension().lastPathComponent
+    let ext = url.pathExtension
+    let num = String(start + index)
+    let width = String(start + max(total, 1) - 1).count
+    let padded = String(repeating: "0", count: max(0, width - num.count)) + num
+    let created = (try? url.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? Date()
+    let df = DateFormatter()
+    df.locale = Locale(identifier: "en_US_POSIX")
+    df.dateFormat = "yyyy-MM-dd"
+    var s = pattern
+        .replacingOccurrences(of: "{name}", with: base)
+        .replacingOccurrences(of: "{n}", with: padded)
+        .replacingOccurrences(of: "{date}", with: df.string(from: created))
+        .replacingOccurrences(of: "/", with: "-")
+        .replacingOccurrences(of: ":", with: "-")
+    if slug {
+        let mapped = s.lowercased().map { ($0.isLetter || $0.isNumber || $0 == "_") ? String($0) : "-" }.joined()
+        s = mapped.replacingOccurrences(of: "-+", with: "-", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+    }
+    s = s.trimmingCharacters(in: .whitespaces)
+    if s.isEmpty { s = base }
+    return ext.isEmpty ? s : s + "." + ext
+}
+
+/// Renames files in place (two-phase, so swaps and case-only changes are safe; rolls back on failure).
+func renameFiles(_ files: [URL], pattern: String, start: Int, slug: Bool, job: Job) -> BatchResult {
+    let fm = FileManager.default
+    let sources = Set(files.map { $0.path.lowercased() })
+    var claimed = Set<String>()
+
+    func taken(_ u: URL) -> Bool {
+        let key = u.path.lowercased()
+        if claimed.contains(key) { return true }
+        return fm.fileExists(atPath: u.path) && !sources.contains(key)
+    }
+
+    var plan: [(src: URL, dst: URL)] = []
+    for (i, f) in files.enumerated() {
+        let dir = f.deletingLastPathComponent()
+        let name = renamedName(f, index: i, total: files.count, pattern: pattern, start: start, slug: slug)
+        var dst = dir.appendingPathComponent(name)
+        let base = (name as NSString).deletingPathExtension
+        let ext = (name as NSString).pathExtension
+        var n = 2
+        while taken(dst) {
+            dst = dir.appendingPathComponent(ext.isEmpty ? "\(base) \(n)" : "\(base) \(n).\(ext)")
+            n += 1
+        }
+        claimed.insert(dst.path.lowercased())
+        plan.append((f, dst))
+    }
+
+    var staged: [(tmp: URL, src: URL, dst: URL)] = []
+    func rollback() { for s in staged.reversed() { try? fm.moveItem(at: s.tmp, to: s.src) } }
+
+    for p in plan where p.src.path != p.dst.path {
+        if job.cancelled { rollback(); return BatchResult(error: "Cancelled") }
+        let tmp = p.src.deletingLastPathComponent().appendingPathComponent(".dw-" + UUID().uuidString)
+        do {
+            try fm.moveItem(at: p.src, to: tmp)
+            staged.append((tmp, p.src, p.dst))
+        } catch {
+            rollback()
+            return BatchResult(error: "Couldn’t rename \(p.src.lastPathComponent)")
+        }
+    }
+    if staged.isEmpty { return BatchResult(error: "Names are already like that") }
+
+    var done: [URL] = []
+    var failed = 0
+    for s in staged {
+        do { try fm.moveItem(at: s.tmp, to: s.dst); done.append(s.dst) }
+        catch { try? fm.moveItem(at: s.tmp, to: s.src); failed += 1 }
+    }
+    if done.isEmpty { return BatchResult(error: "Couldn’t rename") }
+    var note = done.count == 1 ? "Renamed" : "\(done.count) files renamed"
+    if failed > 0 { note += "\n\(failed) failed" }
+    return BatchResult(note: note, outs: done, error: nil)
+}
+
+/// One archive with everything in it (a single file or folder is zipped directly).
+func zipFiles(_ files: [URL], job: Job) -> BatchResult {
+    guard let first = files.first else { return BatchResult(error: "Nothing to zip") }
+    let fm = FileManager.default
+    let tmp = makeTemp()
+    defer { try? fm.removeItem(at: tmp) }
+    let out: URL
+    var source = first
+    if files.count == 1 {
+        out = uniqueOutput(for: first, suffix: "", ext: "zip")
+    } else {
+        let stage = tmp.appendingPathComponent("Archive", isDirectory: true)
+        do { try fm.createDirectory(at: stage, withIntermediateDirectories: true) }
+        catch { return BatchResult(error: "Couldn’t prepare files") }
+        for f in files {
+            if job.cancelled { return BatchResult(error: "Cancelled") }
+            var dest = stage.appendingPathComponent(f.lastPathComponent)
+            var n = 2
+            while fm.fileExists(atPath: dest.path) {
+                let base = f.deletingPathExtension().lastPathComponent
+                let e = f.pathExtension
+                dest = stage.appendingPathComponent(e.isEmpty ? "\(base) \(n)" : "\(base) \(n).\(e)")
+                n += 1
+            }
+            do { try fm.copyItem(at: f, to: dest) }
+            catch { return BatchResult(error: "Couldn’t read \(f.lastPathComponent)") }
+        }
+        source = stage
+        out = uniqueOutput(for: first.deletingLastPathComponent().appendingPathComponent("Archive"), suffix: "", ext: "zip")
+    }
+    let r = runTool("/usr/bin/ditto", ["-c", "-k", "--keepParent", source.path, out.path], job: job)
+    guard r.status == 0, fm.fileExists(atPath: out.path) else {
+        try? fm.removeItem(at: out)
+        return BatchResult(error: job.cancelled ? "Cancelled" : lastLine(r.err))
+    }
+    return BatchResult(note: human(fileSize(out)), outs: [out], error: nil)
+}
+
+func sortFolderName(_ u: URL) -> String {
+    switch kind(of: u) {
+    case .image: return "Images"
+    case .video: return "Videos"
+    case .audio: return "Audio"
+    case .pdf: return "PDFs"
+    case .document, .markdown: return "Documents"
+    case .sheet: return "Spreadsheets"
+    case .slides: return "Presentations"
+    case .archive: return "Archives"
+    case .data: return "Data"
+    case .other: return "Other"
+    }
+}
+
+/// Tidies files into sub-folders by type or by month. A single dropped folder sorts its contents.
+func sortFiles(_ input: [URL], byDate: Bool, job: Job) -> BatchResult {
+    let fm = FileManager.default
+    var files = input
+    if input.count == 1, isDirectory(input[0]) {
+        files = (try? fm.contentsOfDirectory(at: input[0], includingPropertiesForKeys: nil,
+                                             options: [.skipsHiddenFiles])) ?? []
+    }
+    files = files.filter { !isDirectory($0) }
+    if files.isEmpty { return BatchResult(error: "Nothing to sort") }
+
+    let df = DateFormatter()
+    df.locale = Locale(identifier: "en_US_POSIX")
+    df.dateFormat = "yyyy-MM"
+    var folders: [String: URL] = [:]
+    var moved = 0
+
+    for f in files {
+        if job.cancelled { break }
+        let created = (try? f.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? Date()
+        let name = byDate ? df.string(from: created) : sortFolderName(f)
+        let parent = f.deletingLastPathComponent()
+        if parent.lastPathComponent == name { continue }          // already sorted
+        let dir = parent.appendingPathComponent(name, isDirectory: true)
+        do {
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            var dest = dir.appendingPathComponent(f.lastPathComponent)
+            var n = 2
+            while fm.fileExists(atPath: dest.path) {
+                let base = f.deletingPathExtension().lastPathComponent
+                let e = f.pathExtension
+                dest = dir.appendingPathComponent(e.isEmpty ? "\(base) \(n)" : "\(base) \(n).\(e)")
+                n += 1
+            }
+            try fm.moveItem(at: f, to: dest)
+            moved += 1
+            folders[dir.path] = dir
+        } catch { continue }
+    }
+    if job.cancelled { return BatchResult(error: "Cancelled") }
+    if moved == 0 { return BatchResult(error: "Nothing to move") }
+    return BatchResult(note: "\(moved) files → \(folders.count) folders", outs: Array(folders.values), error: nil)
+}
+
+/// Opens the system share service (AirDrop / Mail) with the files.
+func shareBatch(_ service: NSSharingService.Name, name: String, note: String, _ files: [URL]) -> BatchResult {
+    var ok = false
+    DispatchQueue.main.sync {
+        if let s = NSSharingService(named: service), s.canPerform(withItems: files) {
+            s.perform(withItems: files)
+            ok = true
+        }
+    }
+    return ok ? BatchResult(note: note, outs: [], error: nil)
+              : BatchResult(error: "\(name) isn’t available")
+}
+
+/// Puts the files themselves on the clipboard so they can be pasted into Finder, Slack, Mail…
+func copyFiles(_ files: [URL]) -> BatchResult {
+    DispatchQueue.main.sync {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.writeObjects(files as [NSURL])
+    }
+    return BatchResult(note: files.count > 1 ? "\(files.count) files copied" : "Copied", outs: [], error: nil)
+}
+
 // MARK: - Normal conversion
 
 func convert(_ action: WheelAction, tool: String, input: URL, inputPath: String? = nil, job: Job) -> Outcome {
@@ -546,6 +987,16 @@ func convert(_ action: WheelAction, tool: String, input: URL, inputPath: String?
     let work = tmp.appendingPathComponent("out")
     try? fm.createDirectory(at: work, withIntermediateDirectories: true)
     defer { try? fm.removeItem(at: tmp) }
+
+    // Actions implemented inside the app.
+    if let run = action.native {
+        if let err = run(inputPath ?? input.path, output, job) {
+            try? fm.removeItem(at: output)
+            return Outcome(error: job.cancelled ? "Cancelled" : err)
+        }
+        guard fm.fileExists(atPath: output.path) else { return Outcome(error: "Nothing was produced") }
+        return Outcome(url: output, before: fileSize(input), after: fileSize(output))
+    }
 
     let r = runTool(tool, action.args(inputPath ?? input.path, action.temp ? work.path : output.path), job: job)
     var ok = r.status == 0 || (action.tool == "qpdf" && r.status == 3)
@@ -559,7 +1010,7 @@ func convert(_ action: WheelAction, tool: String, input: URL, inputPath: String?
         try? fm.removeItem(at: output)
         if job.cancelled { return Outcome(error: "Cancelled") }
         if (r.err.contains("command not found") || r.err.contains("No such file")) && !action.brew.isEmpty {
-            return Outcome(error: missingToolText(action.brew, title: action.title))
+            return Outcome(error: "Missing tool. In Terminal run: brew install \(action.brew)")
         }
         return Outcome(error: lastLine(r.err))
     }
@@ -675,7 +1126,7 @@ func shrinkImage(_ input: URL, target: Int64, before: Int64, job: Job) -> Outcom
 // PDF: Ghostscript image downsampling ladder, binary-searched for the gentlest setting that fits.
 
 func shrinkPDF(_ input: URL, target: Int64, before: Int64, job: Job) -> Outcome {
-    guard let gsPath = locate("gs") else { return Outcome(error: missingToolText("ghostscript")) }
+    guard let gsPath = locate("gs") else { return Outcome(error: "Missing tool. In Terminal run: brew install ghostscript") }
     let tmp = makeTemp(); defer { try? FileManager.default.removeItem(at: tmp) }
     let ladder = [250, 200, 150, 120, 96, 72, 55, 40]
     var cache: [Int: (URL, Int64)] = [:]
@@ -725,7 +1176,7 @@ func probeDuration(_ fp: String, _ path: String, job: Job) -> Double {
 
 func shrinkVideo(_ input: URL, target: Int64, before: Int64, job: Job) -> Outcome {
     guard let ffm = locate("ffmpeg"), let fp = locate("ffprobe") else {
-        return Outcome(error: missingToolText("ffmpeg"))
+        return Outcome(error: "Missing tool. In Terminal run: brew install ffmpeg")
     }
     let dur = probeDuration(fp, input.path, job: job)
     if job.cancelled { return Outcome(error: "Cancelled") }
@@ -775,7 +1226,7 @@ func shrinkVideo(_ input: URL, target: Int64, before: Int64, job: Job) -> Outcom
 
 func shrinkAudio(_ input: URL, target: Int64, before: Int64, job: Job) -> Outcome {
     guard let ffm = locate("ffmpeg"), let fp = locate("ffprobe") else {
-        return Outcome(error: missingToolText("ffmpeg"))
+        return Outcome(error: "Missing tool. In Terminal run: brew install ffmpeg")
     }
     let dur = probeDuration(fp, input.path, job: job)
     if job.cancelled { return Outcome(error: "Cancelled") }
@@ -801,6 +1252,196 @@ func shrinkAudio(_ input: URL, target: Int64, before: Int64, job: Job) -> Outcom
     }
     guard let b = best else { return Outcome(error: "Compression failed") }
     return commit(b.0, input: input, ext: "mp3", before: before, reached: b.1 <= target)
+}
+
+// MARK: - Small UI components
+
+struct KeyCap: View {
+    let text: String
+    var body: some View {
+        Text(text)
+            .font(.system(size: 10, weight: .semibold, design: .rounded))
+            .padding(.horizontal, 6).padding(.vertical, 2.5)
+            .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(Color.primary.opacity(0.08)))
+            .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(Color.primary.opacity(0.14), lineWidth: 0.5))
+    }
+}
+
+struct SpinnerRing: View {
+    @State private var spin = false
+    var body: some View {
+        ZStack {
+            Circle().stroke(Color.primary.opacity(0.10), lineWidth: 4)
+            Circle()
+                .trim(from: 0, to: 0.28)
+                .stroke(AngularGradient(colors: [Color.accentColor.opacity(0), Color.accentColor],
+                                        center: .center, startAngle: .degrees(0), endAngle: .degrees(100)),
+                        style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                .rotationEffect(.degrees(spin ? 360 : 0))
+        }
+        .frame(width: 40, height: 40)
+        .onAppear {
+            withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) { spin = true }
+        }
+    }
+}
+
+struct DoneBadge: View {
+    let warn: Bool
+    @State private var go = false
+    var body: some View {
+        let c: Color = warn ? .orange : .green
+        ZStack {
+            Circle().fill(c.opacity(0.18))
+                .frame(width: 52, height: 52)
+                .scaleEffect(go ? 1 : 0.5)
+                .opacity(go ? 1 : 0)
+            Image(systemName: warn ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
+                .font(.system(size: 36))
+                .foregroundStyle(c)
+                .symbolEffect(.bounce, value: go)
+        }
+        .onAppear { withAnimation(.spring(response: 0.4, dampingFraction: 0.6)) { go = true } }
+    }
+}
+
+struct HelpCard: View {
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "circle.hexagongrid.fill")
+                    .font(.system(size: 17)).foregroundStyle(Color.accentColor)
+                Text("DropWheel").font(.system(size: 16, weight: .bold, design: .rounded))
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                row("square.and.arrow.down", "Drop one or many files onto the wheel")
+                row("hand.tap", "Click a wedge, or press its number")
+                row("scalemass", "Set Size compresses to an exact KB or MB")
+                row("ellipsis.circle", "More › has rename, zip, sort, AirDrop, mail")
+            }
+            Divider().opacity(0.5)
+            VStack(spacing: 7) {
+                shortcut("Open or close", ["fn", "⌥ Space"])
+                shortcut("Pick an action", ["1–9", "0"])
+                shortcut("Paste files or screenshot", ["⌘V"])
+                shortcut("Back, or close", ["esc"])
+            }
+            HStack(spacing: 14) {
+                legend(Color.accentColor, "Convert")
+                legend(Color.green, "Compress")
+                Spacer()
+                Text("Press H to toggle").font(.system(size: 9)).foregroundStyle(.secondary)
+            }
+        }
+        .padding(18)
+        .frame(width: 290)
+        .glassCard(22)
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onClose)
+        .transition(.scale(scale: 0.92).combined(with: .opacity))
+    }
+
+    private func row(_ icon: String, _ text: String) -> some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: icon).frame(width: 16).foregroundStyle(Color.accentColor)
+            Text(text).font(.system(size: 11.5)).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func shortcut(_ label: String, _ keys: [String]) -> some View {
+        HStack(spacing: 5) {
+            Text(label).font(.system(size: 11.5)).foregroundStyle(.secondary)
+            Spacer()
+            ForEach(keys, id: \.self) { KeyCap(text: $0) }
+        }
+    }
+
+    private func legend(_ c: Color, _ t: String) -> some View {
+        HStack(spacing: 5) {
+            Circle().fill(c).frame(width: 7, height: 7)
+            Text(t).font(.system(size: 10.5, weight: .medium))
+        }
+    }
+}
+
+// MARK: - Wedge item
+
+struct WedgeItem: View {
+    let action: WheelAction
+    let index: Int
+    let count: Int
+    let hot: Bool
+    let size: CGFloat
+    let inner: CGFloat
+    let outer: CGFloat
+
+    @State private var shown = false
+
+    private let corner: CGFloat = 7
+    private let gap: CGFloat = 3
+
+    var body: some View {
+        let step = 360.0 / Double(count)
+        let s = Angle.degrees(-90 + step * Double(index))
+        let e = Angle.degrees(-90 + step * Double(index + 1))
+        let mid = (s.radians + e.radians) / 2
+        let ux = CGFloat(cos(mid)), uy = CGFloat(sin(mid))
+        let r = (inner + outer) / 2 + 1
+        let tint: Color = action.compress ? Color.green : Color.accentColor
+        let shape = Wedge(start: s, end: e, inner: inner, outer: outer, gap: gap, round: corner)
+        let stroke = StrokeStyle(lineWidth: corner * 2, lineJoin: .round)
+        let restPaint: Color = action.compress ? Color.green : Color.primary
+        let restOpacity: Double = action.compress ? 0.15 : 0.07
+        let hotPaint = RadialGradient(colors: [tint.opacity(0.80), tint], center: .center,
+                                      startRadius: inner, endRadius: outer)
+        let pop: CGFloat = hot ? 6 : 0
+
+        ZStack {
+            // Resting surface (composited as one layer so the fill and rounded stroke don't double up).
+            ZStack {
+                shape.fill(restPaint)
+                shape.stroke(restPaint, style: stroke)
+            }
+            .compositingGroup()
+            .opacity(restOpacity)
+
+            // Highlight surface, faded in on hover.
+            ZStack {
+                shape.fill(hotPaint)
+                shape.stroke(hotPaint, style: stroke)
+            }
+            .compositingGroup()
+            .opacity(hot ? 1 : 0)
+            .shadow(color: tint.opacity(hot ? 0.45 : 0), radius: 12, y: 3)
+
+            VStack(spacing: 4) {
+                Image(systemName: action.icon).font(.system(size: 19, weight: .medium))
+                Text(action.title).font(.system(size: 11, weight: .medium)).lineLimit(1)
+            }
+            .foregroundStyle(hot ? Color.white : Color.primary)
+            .shadow(color: .black.opacity(hot ? 0.25 : 0), radius: 2, y: 1)
+            .scaleEffect(hot ? 1.06 : 1)
+            .position(x: size / 2 + ux * r, y: size / 2 + uy * r)
+
+            if index < 10 {
+                Text(index == 9 ? "0" : "\(index + 1)")
+                    .font(.system(size: 9, weight: .semibold, design: .rounded))
+                    .foregroundStyle(hot ? Color.white.opacity(0.8) : Color.secondary.opacity(0.7))
+                    .position(x: size / 2 + ux * (outer - 12), y: size / 2 + uy * (outer - 12))
+            }
+        }
+        .frame(width: size, height: size)
+        .offset(x: ux * pop, y: uy * pop)
+        .scaleEffect(shown ? 1 : 0.75)
+        .opacity(shown ? 1 : 0)
+        .allowsHitTesting(false)
+        .animation(.spring(response: 0.28, dampingFraction: 0.72), value: hot)
+        .animation(.spring(response: 0.45, dampingFraction: 0.8).delay(Double(index) * 0.025), value: shown)
+        .onAppear { shown = true }
+        .transition(.opacity)
+    }
 }
 
 // MARK: - Target size card
@@ -830,12 +1471,16 @@ struct SizeCard: View {
         guard let t = target else { return false }
         return t < (sizes.max() ?? 0)
     }
+    private var ratio: Double {
+        guard let t = target else { return 0.5 }
+        return min(max(Double(t) / Double(ref), 0.02), 1)
+    }
     private var hint: String {
         guard let t = target else { return "Enter a size, for example 500 KB or 2 MB" }
         if !canRun { return "That isn’t smaller than the original" }
         if files.count > 1 { return "Each file will be at most \(human(t))" }
         let pct = Int((1 - Double(t) / Double(ref)) * 100)
-        return "About \(pct)% smaller  ·  \(human(sizes[0])) → \(human(t))"
+        return "About \(pct)% smaller"
     }
     private var tip: String {
         switch kind(of: files[0]) {
@@ -861,77 +1506,243 @@ struct SizeCard: View {
         }
     }
     private var fraction: Binding<Double> {
-        Binding(get: {
-            guard let t = target else { return 0.5 }
-            return min(max(Double(t) / Double(ref), 0.02), 1)
-        }, set: { setTarget(Int64(Double(ref) * $0)) })
+        Binding(get: { ratio }, set: { setTarget(Int64(Double(ref) * $0)) })
     }
 
     var body: some View {
-        VStack(spacing: 14) {
-            HStack(spacing: 10) {
-                Image(nsImage: NSWorkspace.shared.icon(forFile: files[0].path))
-                    .resizable().frame(width: 36, height: 36)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Compress to size").font(.headline)
-                    Text(files.count > 1 ? "\(files.count) files · each to the target"
-                                         : "\(files[0].lastPathComponent) · \(human(sizes[0]))")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .lineLimit(1).truncationMode(.middle)
-                }
-                Spacer()
-            }
-
-            HStack(spacing: 8) {
-                TextField("0", text: $text)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 30, weight: .semibold, design: .rounded))
-                    .multilineTextAlignment(.trailing)
-                    .focused($focused)
-                    .padding(.horizontal, 12)
-                    .frame(height: 52)
-                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.quaternary))
-                Picker("", selection: $unit) {
-                    ForEach(Unit.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented).labelsHidden().frame(width: 92)
-            }
-
-            Slider(value: fraction, in: 0.02...1)
+        VStack(spacing: 16) {
+            header
+            inputField
+            sizeBar
+            Slider(value: fraction, in: 0.02...1).tint(Color.green)
 
             if !chips.isEmpty {
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 4), spacing: 6) {
-                    ForEach(chips, id: \.self) { b in
-                        Button { setTarget(b) } label: { Text(human(b)).frame(maxWidth: .infinity) }
-                            .buttonStyle(.bordered).controlSize(.small)
-                    }
+                    ForEach(chips, id: \.self) { b in chip(b) }
                 }
             }
 
             VStack(spacing: 3) {
-                Text(hint).font(.callout).foregroundStyle(canRun || target == nil ? Color.secondary : Color.orange)
+                Text(hint)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(canRun || target == nil ? Color.secondary : Color.orange)
                 if !tip.isEmpty { Text(tip).font(.caption2).foregroundStyle(.tertiary) }
             }
             .multilineTextAlignment(.center)
 
-            HStack {
+            HStack(spacing: 10) {
                 Button("Back") { onBack() }
-                Spacer()
-                Button("Compress") { if let t = target, canRun { onStart(t) } }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!canRun)
+                    .buttonStyle(.bordered).controlSize(.large)
+                Button { if let t = target, canRun { onStart(t) } } label: {
+                    Text("Compress").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent).controlSize(.large)
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canRun)
             }
         }
-        .padding(20)
-        .frame(width: 380)
-        .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(.regularMaterial))
-        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(Color.primary.opacity(0.12)))
-        .shadow(color: .black.opacity(0.3), radius: 24, y: 10)
+        .padding(22)
+        .frame(width: 390)
+        .glassCard(26)
         .onAppear {
             setTarget(max(ref / 2, 1_000))
             DispatchQueue.main.async { focused = true }
         }
+    }
+
+    private var header: some View {
+        HStack(spacing: 11) {
+            Image(nsImage: NSWorkspace.shared.icon(forFile: files[0].path))
+                .resizable().frame(width: 38, height: 38)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Compress to size").font(.system(size: 15, weight: .semibold, design: .rounded))
+                Text(files.count > 1 ? "\(files.count) files, each to the target"
+                                     : "\(files[0].lastPathComponent)  ·  \(human(sizes[0]))")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle)
+            }
+            Spacer()
+        }
+    }
+
+    private var inputField: some View {
+        HStack(spacing: 10) {
+            TextField("0", text: $text)
+                .textFieldStyle(.plain)
+                .font(.system(size: 34, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .multilineTextAlignment(.trailing)
+                .focused($focused)
+            Picker("", selection: $unit) {
+                ForEach(Unit.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented).labelsHidden().frame(width: 88)
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 62)
+        .background(RoundedRectangle(cornerRadius: 15, style: .continuous).fill(Color.primary.opacity(0.06)))
+        .overlay(
+            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                .strokeBorder(focused ? Color.accentColor.opacity(0.7) : Color.primary.opacity(0.08),
+                              lineWidth: focused ? 2 : 1)
+        )
+        .animation(.easeOut(duration: 0.15), value: focused)
+    }
+
+    /// Visual before/after: the green bar is the target relative to the original.
+    private var sizeBar: some View {
+        VStack(spacing: 6) {
+            GeometryReader { g in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.primary.opacity(0.08))
+                    Capsule()
+                        .fill(LinearGradient(colors: [Color.green.opacity(0.65), Color.green],
+                                             startPoint: .leading, endPoint: .trailing))
+                        .frame(width: max(8, g.size.width * CGFloat(ratio)))
+                        .animation(.spring(response: 0.3, dampingFraction: 0.85), value: ratio)
+                }
+            }
+            .frame(height: 7)
+            HStack {
+                Text(target.map { human($0) } ?? "–")
+                    .foregroundStyle(canRun ? Color.green : Color.secondary)
+                Spacer()
+                Text(files.count > 1 ? "smallest: \(human(ref))" : "original: \(human(ref))")
+                    .foregroundStyle(.secondary)
+            }
+            .font(.system(size: 11, weight: .medium, design: .rounded))
+            .monospacedDigit()
+        }
+    }
+
+    private func chip(_ b: Int64) -> some View {
+        let selected = target == b
+        return Button { setTarget(b) } label: {
+            Text(human(b))
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .foregroundStyle(selected ? Color.accentColor : Color.primary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+                .background(Capsule().fill(selected ? Color.accentColor.opacity(0.18) : Color.primary.opacity(0.06)))
+                .overlay(Capsule().strokeBorder(selected ? Color.accentColor.opacity(0.6) : Color.clear, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Rename card
+
+struct RenameCard: View {
+    let files: [URL]
+    let onStart: (String, Int, Bool) -> Void
+    let onBack: () -> Void
+
+    @State private var pattern = "{name}"
+    @State private var start = 1
+    @State private var slug = false
+    @FocusState private var focused: Bool
+
+    private func newName(_ i: Int) -> String {
+        renamedName(files[i], index: i, total: files.count, pattern: pattern, start: start, slug: slug)
+    }
+    private var canRun: Bool {
+        if pattern.trimmingCharacters(in: .whitespaces).isEmpty { return false }
+        return files.indices.contains { newName($0) != files[$0].lastPathComponent }
+    }
+
+    var body: some View {
+        VStack(spacing: 14) {
+            header
+            field
+            HStack(spacing: 6) {
+                ForEach(["{name}", "{n}", "{date}"], id: \.self) { t in
+                    Button { pattern += t } label: {
+                        Text(t)
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .padding(.horizontal, 9).padding(.vertical, 5)
+                            .background(Capsule().fill(Color.primary.opacity(0.07)))
+                    }
+                    .buttonStyle(.plain)
+                }
+                Spacer()
+                Button("Clear") { pattern = "" }
+                    .buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
+            }
+            HStack {
+                Stepper("Number from \(start)", value: $start, in: 0...9999)
+                    .font(.system(size: 12))
+                Spacer()
+                Toggle("Clean names", isOn: $slug)
+                    .toggleStyle(.switch).controlSize(.small).font(.system(size: 12))
+            }
+            previewBox
+            Text("{name} original name  ·  {n} counter  ·  {date} file date")
+                .font(.caption2).foregroundStyle(.tertiary)
+            HStack(spacing: 10) {
+                Button("Back") { onBack() }
+                    .buttonStyle(.bordered).controlSize(.large)
+                Button { if canRun { onStart(pattern, start, slug) } } label: {
+                    Text(files.count > 1 ? "Rename \(files.count) files" : "Rename").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent).controlSize(.large)
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canRun)
+            }
+        }
+        .padding(22)
+        .frame(width: 390)
+        .glassCard(26)
+        .onAppear { DispatchQueue.main.async { focused = true } }
+    }
+
+    private var header: some View {
+        HStack(spacing: 11) {
+            Image(nsImage: NSWorkspace.shared.icon(forFile: files[0].path))
+                .resizable().frame(width: 38, height: 38)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Rename").font(.system(size: 15, weight: .semibold, design: .rounded))
+                Text(files.count > 1 ? "\(files.count) files" : files[0].lastPathComponent)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle)
+            }
+            Spacer()
+        }
+    }
+
+    private var field: some View {
+        TextField("{name}", text: $pattern)
+            .textFieldStyle(.plain)
+            .font(.system(size: 18, weight: .medium, design: .monospaced))
+            .focused($focused)
+            .padding(.horizontal, 14)
+            .frame(height: 50)
+            .background(RoundedRectangle(cornerRadius: 13, style: .continuous).fill(Color.primary.opacity(0.06)))
+            .overlay(
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .strokeBorder(focused ? Color.accentColor.opacity(0.7) : Color.primary.opacity(0.08),
+                                  lineWidth: focused ? 2 : 1)
+            )
+    }
+
+    private var previewBox: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(files.prefix(3).enumerated()), id: \.offset) { i, f in
+                HStack(spacing: 6) {
+                    Text(f.lastPathComponent).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.middle)
+                    Image(systemName: "arrow.right").font(.system(size: 9)).foregroundStyle(.tertiary)
+                    Text(newName(i)).foregroundStyle(Color.accentColor)
+                        .lineLimit(1).truncationMode(.middle)
+                }
+                .font(.system(size: 11))
+            }
+            if files.count > 3 {
+                Text("+ \(files.count - 3) more").font(.caption2).foregroundStyle(.tertiary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.primary.opacity(0.05)))
     }
 }
 
@@ -942,6 +1753,7 @@ enum Phase: Equatable {
     case help
     case choosing([URL])
     case sizing([URL])
+    case renaming([URL])
     case running(String)
     case done(String, Bool)      // note, warning
     case failed(String)
@@ -953,12 +1765,29 @@ struct WheelView: View {
     @State private var hovered: String?
     @State private var busy = false
     @State private var job: Job?
+    @State private var appear = false
+    @State private var page = 0
 
     private let size: CGFloat = AppDelegate.panelSize
     private let inner: CGFloat = 84
     private let outer: CGFloat = 200
 
-    private var isSizing: Bool { if case .sizing = phase { return true }; return false }
+    private var isCard: Bool {
+        switch phase {
+        case .sizing, .renaming: return true
+        default: return false
+        }
+    }
+
+    /// Up to 9 actions per page plus a "More ›" wedge when there are more than 10 in total.
+    private func pageList(_ files: [URL]) -> [WheelAction] {
+        let all = wheelList(files)
+        guard all.count > 10 else { return all }
+        let pages = Int((Double(all.count) / 9.0).rounded(.up))
+        let p = page % pages
+        let slice = Array(all[(p * 9)..<min(all.count, (p + 1) * 9)])
+        return slice + [act(moreID, "ellipsis.circle", "-", ext: nil, args: { _, _ in [] })]
+    }
 
     var body: some View {
         ZStack {
@@ -969,14 +1798,29 @@ struct WheelView: View {
                          onBack: { phase = .choosing(files) })
                     .transition(.scale(scale: 0.94).combined(with: .opacity))
             }
+            if case .renaming(let files) = phase {
+                RenameCard(files: files,
+                           onStart: { p, s, c in runRename(files, pattern: p, start: s, slug: c) },
+                           onBack: { phase = .choosing(files) })
+                    .transition(.scale(scale: 0.94).combined(with: .opacity))
+            }
         }
         .frame(width: size, height: size)
+        .scaleEffect(appear ? 1 : 0.9)
+        .opacity(appear ? 1 : 0)
         .contentShape(Rectangle())
         .onDrop(of: [.fileURL], isTargeted: $targeted, perform: handleDrop)
         .animation(.spring(response: 0.42, dampingFraction: 0.78), value: phase)
         .animation(.spring(response: 0.3, dampingFraction: 0.7), value: targeted)
+        .onChange(of: hovered) { _, new in
+            if new != nil { NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now) }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .wheelReset)) { _ in
-            if !busy { phase = .idle; hovered = nil }
+            if !busy { phase = .idle; hovered = nil; page = 0 }
+            appear = false
+            DispatchQueue.main.async {
+                withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) { appear = true }
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .wheelHelp)) { _ in
             if busy { return }
@@ -985,44 +1829,67 @@ struct WheelView: View {
         .onReceive(NotificationCenter.default.publisher(for: .wheelEsc)) { _ in
             if busy { NotificationCenter.default.post(name: .wheelClose, object: nil); return }
             if case .sizing(let f) = phase { phase = .choosing(f) }
+            else if case .renaming(let f) = phase { phase = .choosing(f) }
             else { NotificationCenter.default.post(name: .wheelClose, object: nil) }
         }
         .onReceive(NotificationCenter.default.publisher(for: .wheelPick)) { n in
             if case .choosing(let files) = phase, let i = n.object as? Int {
-                let list = wheelList(files)
+                let list = pageList(files)
                 if i >= 1 && i <= list.count { choose(list[i - 1], files) }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .wheelPaste)) { _ in
+            guard !busy else { return }
+            switch phase {
+            case .idle, .choosing, .help, .failed:
+                let f = pasteboardFiles()
+                if !f.isEmpty { page = 0; hovered = nil; phase = .choosing(f) }
+            default:
+                break
             }
         }
     }
 
     // MARK: Wheel layer
 
+    private var base: some View {
+        let d = outer * 2 + 8
+        return ZStack {
+            Circle().fill(.regularMaterial)
+            Circle().fill(glassSheen)
+            Circle().strokeBorder(glassRim, lineWidth: 1)
+            // Drop-target glow
+            Circle().strokeBorder(Color.accentColor, lineWidth: 9).blur(radius: 10)
+                .opacity(targeted ? 0.55 : 0)
+            Circle().strokeBorder(Color.accentColor, lineWidth: 3)
+                .opacity(targeted ? 1 : 0)
+        }
+        .frame(width: d, height: d)
+        .shadow(color: .black.opacity(0.30), radius: 28, y: 12)
+        .shadow(color: .black.opacity(0.10), radius: 2, y: 1)
+    }
+
     var wheelLayer: some View {
         ZStack {
-            Circle().fill(.regularMaterial)
-                .frame(width: outer * 2 + 8, height: outer * 2 + 8)
-                .shadow(color: .black.opacity(0.28), radius: 22, y: 8)
-
-            Circle()
-                .strokeBorder(targeted ? Color.accentColor : Color.primary.opacity(0.14), lineWidth: targeted ? 3 : 1)
-                .frame(width: outer * 2 + 8, height: outer * 2 + 8)
+            base
 
             if case .choosing(let files) = phase { wedges(for: files) }
 
             center
 
-            if phase == .help { helpCard }
+            if phase == .help { HelpCard { phase = .idle } }
             if phase == .idle { helpButton }
         }
         .frame(width: size, height: size)
-        .opacity(isSizing ? 0 : 1)
-        .allowsHitTesting(!isSizing)
+        .opacity(isCard ? 0 : 1)
+        .scaleEffect(isCard ? 0.97 : 1)
+        .allowsHitTesting(!isCard)
         .contentShape(Rectangle())
         .onContinuousHover { hp in
             guard case .choosing(let files) = phase else { hovered = nil; return }
             switch hp {
             case .active(let loc):
-                let list = wheelList(files)
+                let list = pageList(files)
                 hovered = wedgeIndex(at: loc, count: list.count).map { list[$0].id }
             case .ended:
                 hovered = nil
@@ -1030,13 +1897,13 @@ struct WheelView: View {
         }
         .gesture(SpatialTapGesture().onEnded { v in
             guard case .choosing(let files) = phase else { return }
-            let list = wheelList(files)
+            let list = pageList(files)
             if let i = wedgeIndex(at: v.location, count: list.count) { choose(list[i], files) }
             else if hypot(v.location.x - size / 2, v.location.y - size / 2) < inner { phase = .idle }
         })
     }
 
-    // MARK: Help
+    // MARK: Help button
 
     var helpButton: some View {
         Button { phase = .help } label: {
@@ -1047,74 +1914,14 @@ struct WheelView: View {
         .position(x: size / 2, y: size / 2 + outer - 32)
     }
 
-    var helpCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("How it works").font(.system(size: 15, weight: .bold)).padding(.bottom, 2)
-            helpRow("keyboard", "fn or ⌥Space opens / closes the wheel")
-            helpRow("square.and.arrow.down", "Drag one or many files onto it")
-            helpRow("hand.tap", "Click a wedge, or press 1–9 (0 = 10th)")
-            helpRow("scalemass", "Set Size: compress to an exact KB / MB limit")
-            helpRow("paintpalette", "Blue = convert · Green = compress")
-            helpRow("folder", "Saved next to the original (or the folder you chose)")
-            helpRow("xmark.circle", "Click the center to cancel · Esc to close")
-            Text("Click anywhere here to close · press H to toggle")
-                .font(.system(size: 9)).foregroundStyle(.secondary).frame(maxWidth: .infinity)
-        }
-        .padding(16)
-        .frame(width: 300)
-        .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(.regularMaterial))
-        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(Color.primary.opacity(0.12)))
-        .shadow(color: .black.opacity(0.2), radius: 12, y: 4)
-        .contentShape(Rectangle())
-        .onTapGesture { phase = .idle }
-        .transition(.scale(scale: 0.92).combined(with: .opacity))
-    }
-
-    func helpRow(_ icon: String, _ text: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: icon).frame(width: 16).foregroundStyle(Color.accentColor)
-            Text(text).font(.system(size: 11)).fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
     // MARK: Wedges
 
     @ViewBuilder
     func wedges(for files: [URL]) -> some View {
-        let list = wheelList(files)
-        let step = 360.0 / Double(list.count)
+        let list = pageList(files)
         ForEach(Array(list.enumerated()), id: \.element.id) { idx, action in
-            let s = Angle.degrees(-90 + step * Double(idx) + 1.5)
-            let e = Angle.degrees(-90 + step * Double(idx + 1) - 1.5)
-            let mid = (s.radians + e.radians) / 2
-            let r = (inner + outer) / 2 + 2
-            let isHot = hovered == action.id
-            let tint: Color = action.compress ? .green : .accentColor
-            let rest: Color = action.compress ? Color.green.opacity(0.16) : Color.primary.opacity(0.07)
-
-            ZStack {
-                Wedge(start: s, end: e, inner: inner, outer: outer)
-                    .fill(isHot ? tint : rest)
-                Wedge(start: s, end: e, inner: inner, outer: outer)
-                    .stroke(Color.primary.opacity(0.10), lineWidth: 0.5)
-
-                VStack(spacing: 4) {
-                    Image(systemName: action.icon).font(.system(size: 20, weight: .medium))
-                    Text(action.title).font(.system(size: 11, weight: .medium)).lineLimit(1)
-                }
-                .foregroundStyle(isHot ? Color.white : Color.primary)
-                .position(x: size / 2 + cos(mid) * r, y: size / 2 + sin(mid) * r)
-
-                if idx < 9 {
-                    Text("\(idx + 1)").font(.system(size: 9, weight: .semibold, design: .rounded))
-                        .foregroundStyle(isHot ? Color.white.opacity(0.75) : Color.secondary.opacity(0.7))
-                        .position(x: size / 2 + cos(mid) * (outer - 11), y: size / 2 + sin(mid) * (outer - 11))
-                }
-            }
-            .frame(width: size, height: size)
-            .allowsHitTesting(false)
-            .animation(.easeOut(duration: 0.12), value: hovered)
-            .transition(.scale(scale: 0.6).combined(with: .opacity))
+            WedgeItem(action: action, index: idx, count: list.count,
+                      hot: hovered == action.id, size: size, inner: inner, outer: outer)
         }
     }
 
@@ -1122,26 +1929,35 @@ struct WheelView: View {
 
     var center: some View {
         ZStack {
-            Circle().fill(.regularMaterial)
-                .frame(width: inner * 2 - 14, height: inner * 2 - 14)
-                .overlay(Circle().strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5))
-                .shadow(color: .black.opacity(0.2), radius: 10, y: 3)
+            ZStack {
+                Circle().fill(.regularMaterial)
+                Circle().fill(glassSheen)
+                Circle().strokeBorder(glassRim, lineWidth: 0.8)
+            }
+            .frame(width: inner * 2 - 14, height: inner * 2 - 14)
+            .shadow(color: .black.opacity(0.22), radius: 12, y: 4)
+            .scaleEffect(targeted ? 1.04 : 1)
 
             switch phase {
             case .idle:
                 VStack(spacing: 6) {
-                    Image(systemName: "arrow.down.doc").font(.system(size: 32, weight: .light))
-                    Text("Drop files").font(.system(size: 13, weight: .medium))
+                    Image(systemName: targeted ? "arrow.down.circle.fill" : "arrow.down.doc")
+                        .font(.system(size: 32, weight: .light))
+                        .foregroundStyle(targeted ? Color.accentColor : Color.secondary)
+                        .symbolEffect(.pulse, isActive: !targeted)
+                    Text(targeted ? "Release to open" : "Drop files")
+                        .font(.system(size: 13, weight: .medium))
                     Text("esc to close").font(.system(size: 9)).opacity(0.6)
                 }
                 .foregroundStyle(.secondary)
-                .scaleEffect(targeted ? 1.1 : 1)
+                .scaleEffect(targeted ? 1.08 : 1)
 
             case .choosing(let files):
                 VStack(spacing: 4) {
                     if let h = hovered {
-                        Text(h).font(.system(size: 15, weight: .semibold))
-                        Text("click to run").font(.system(size: 10)).foregroundStyle(.secondary)
+                        Text(h).font(.system(size: 15, weight: .semibold, design: .rounded))
+                        Text(h == moreID ? "click for more" : "click to run")
+                            .font(.system(size: 10)).foregroundStyle(.secondary)
                     } else {
                         Image(nsImage: NSWorkspace.shared.icon(forFile: files[0].path))
                             .resizable().frame(width: 44, height: 44)
@@ -1164,15 +1980,14 @@ struct WheelView: View {
                 .onTapGesture { job?.cancel() }
 
             case .done(let note, let warn):
-                VStack(spacing: 6) {
-                    Image(systemName: warn ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
-                        .font(.system(size: 40)).foregroundStyle(warn ? Color.orange : Color.green)
-                    Text("Done").font(.system(size: 13, weight: .medium))
+                VStack(spacing: 5) {
+                    DoneBadge(warn: warn)
+                    Text("Done").font(.system(size: 13, weight: .semibold, design: .rounded))
                     Text(note).font(.system(size: 10)).foregroundStyle(.secondary)
                         .multilineTextAlignment(.center).frame(width: 118)
                 }
 
-            case .help, .sizing:
+            case .help, .sizing, .renaming:
                 EmptyView()
 
             case .failed(let msg):
@@ -1215,14 +2030,24 @@ struct WheelView: View {
         }
         group.notify(queue: .main) {
             let files = box.urls.sorted { $0.lastPathComponent < $1.lastPathComponent }
-            if !files.isEmpty && !busy { hovered = nil; phase = .choosing(files) }
+            if !files.isEmpty && !busy { hovered = nil; page = 0; phase = .choosing(files) }
         }
         return true
     }
 
-    /// Wedge clicked: open the size card, or run straight away.
+    /// Wedge clicked: open the size card, flip to the next page, or run straight away.
     func choose(_ action: WheelAction, _ all: [URL]) {
         guard !busy else { return }
+        if action.id == moreID {
+            hovered = nil
+            page += 1
+            return
+        }
+        if action.renaming {
+            hovered = nil
+            phase = .renaming(all)
+            return
+        }
         if action.sizing {
             let k = kind(of: all[0])
             hovered = nil
@@ -1234,16 +2059,29 @@ struct WheelView: View {
 
     func run(_ action: WheelAction, on all: [URL]) {
         guard !busy else { return }
-        guard let tool = locate(action.tool) else {
-            phase = .failed(action.brew.isEmpty ? "Missing tool: \(action.tool)"
-                                                : missingToolText(action.brew, title: action.title))
+
+        // Batch tools work on everything that was dropped, whatever the file types.
+        if let b = action.batch {
+            runBatch(action.title, all, b)
             return
         }
+
         let k = kind(of: all[0])
         let files = all.filter { kind(of: $0) == k }
         let skipped = all.count - files.count
 
-        if action.id == "Merge" {
+        // Native actions need no external tool.
+        var tool = ""
+        if action.native == nil {
+            guard let t = locate(action.tool) else {
+                phase = .failed(action.brew.isEmpty ? "Missing tool: \(action.tool)"
+                                                    : "Missing tool. In Terminal run: brew install \(action.brew)")
+                return
+            }
+            tool = t
+        }
+
+        if action.id == "Merge" || action.id == "Combine to PDF" {
             let joined = files.map { $0.path }.joined(separator: "\u{1}")
             launch(action.title, files: [files[0]], skipped: 0, compress: false, trash: false) { input, job in
                 convert(action, tool: tool, input: input, inputPath: joined, job: job)
@@ -1252,6 +2090,49 @@ struct WheelView: View {
             launch(action.title, files: files, skipped: skipped, compress: action.compress, trash: true) { input, job in
                 convert(action, tool: tool, input: input, job: job)
             }
+        }
+    }
+
+    func runRename(_ files: [URL], pattern: String, start: Int, slug: Bool) {
+        runBatch("Renaming", files) { f, job in
+            renameFiles(f, pattern: pattern, start: start, slug: slug, job: job)
+        }
+    }
+
+    func runBatch(_ title: String, _ files: [URL], _ work: @escaping ([URL], Job) -> BatchResult) {
+        guard !busy else { return }
+        let job = Job()
+        self.job = job
+        busy = true; hovered = nil
+        phase = .running(title + "…")
+        DispatchQueue.global(qos: .userInitiated).async {
+            let r = work(files, job)
+            DispatchQueue.main.async {
+                busy = false
+                self.job = nil
+                if job.cancelled { phase = .failed("Cancelled"); return }
+                if let e = r.error { phase = .failed(e); playSound("Basso"); return }
+                phase = .done(r.note, false)
+                afterDone(r.outs, warn: false)
+            }
+        }
+    }
+
+    /// Sound, reveal in Finder, copy to clipboard, then close the wheel.
+    func afterDone(_ outs: [URL], warn: Bool) {
+        playSound(warn ? "Funk" : "Glass")
+        if !outs.isEmpty {
+            if UserDefaults.standard.object(forKey: "reveal") as? Bool ?? true {
+                NSWorkspace.shared.activateFileViewerSelecting(outs)
+            }
+            if UserDefaults.standard.bool(forKey: "copyResult") {
+                let pb = NSPasteboard.general
+                pb.clearContents()
+                pb.writeObjects(outs as [NSURL])
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + (warn ? 4.0 : 2.2)) {
+            if case .done = phase { NotificationCenter.default.post(name: .wheelClose, object: nil) }
         }
     }
 
@@ -1311,26 +2192,9 @@ struct WheelView: View {
                 if failed > 0 { warn = true; note += "\n\(failed) failed" }
                 if skipped > 0 { note += "\n\(skipped) skipped (other type)" }
                 phase = .done(note, warn)
-                playSound(warn ? "Funk" : "Glass")
-                NSWorkspace.shared.activateFileViewerSelecting(outs)
-                DispatchQueue.main.asyncAfter(deadline: .now() + (warn ? 4.0 : 2.2)) {
-                    if case .done = phase { NotificationCenter.default.post(name: .wheelClose, object: nil) }
-                }
+                afterDone(outs, warn: warn)
             }
         }
     }
 }
 
-struct SpinnerRing: View {
-    @State private var spin = false
-    var body: some View {
-        Circle()
-            .trim(from: 0, to: 0.3)
-            .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 4, lineCap: .round))
-            .frame(width: 40, height: 40)
-            .rotationEffect(.degrees(spin ? 360 : 0))
-            .onAppear {
-                withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) { spin = true }
-            }
-    }
-}

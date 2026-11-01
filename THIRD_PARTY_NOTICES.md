@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-DropWheel itself is licensed under the [MIT License](LICENSE).
+DropWheel itself is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE).
 
 The packaged `DropWheel.dmg` also ships separate command-line programs. They run as independent processes (DropWheel launches them; it does not link against them) and remain under their own licenses. Each project's full license text and source code are available from the upstream links below.
 

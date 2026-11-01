@@ -1,39 +1,35 @@
 # Third-Party Notices
 
-DropWheel's own code is released under the MIT License (see `LICENSE`).
+DropWheel itself is licensed under the [MIT License](LICENSE).
 
-The DropWheel app (DMG) **includes** the following programs, unmodified, inside the app at
-`DropWheel.app/Contents/Resources/bin` together with the libraries they need in `Contents/Resources/libs`.
-DropWheel runs them as separate programs. Each one is owned by its authors and is covered by **its own license**,
-which applies to that program only, not to DropWheel's code.
+The packaged `DropWheel.dmg` also ships separate command-line programs. They run as independent processes (DropWheel launches them; it does not link against them) and remain under their own licenses. Each project's full license text and source code are available from the upstream links below.
 
-| Program | Used for | Project | License (check the project for current terms) |
-|---------|----------|---------|-----------------------------------------------|
-| FFmpeg (ffmpeg, ffprobe) | Video and audio | ffmpeg.org | LGPL / GPL, depending on how it is built (the Homebrew build is GPL) |
-| Ghostscript (gs) | PDF compress, PDF to text / images | ghostscript.com | AGPL |
-| qpdf | PDF merge, split, rotate, unlock | qpdf.sourceforge.io | Apache 2.0 |
-| pandoc | Document / Markdown conversion | pandoc.org | GPL |
-| 7-Zip (7zz) | Extract 7z / rar archives | 7-zip.org | LGPL, with the unRAR restriction |
-| Libraries used by the above (for example x264, x265, lame, libvpx, opus, freetype, lcms2) | Codecs and rendering | their own projects | Various |
+> **Maintainer note:** Verify this list against what `make-app.sh` actually bundles, and against the exact versions and build options you used (especially FFmpeg). Update the table if anything differs.
 
-## Getting the source code
+| Tool | Used for | License | Source |
+|---|---|---|---|
+| FFmpeg / FFprobe | Video and audio conversion, WebP, metadata stripping | LGPL 2.1+ or GPL 2+ depending on build options (builds with libx264 / libx265 are GPL) | https://ffmpeg.org |
+| x264 | H.264 encoding (inside FFmpeg) | GPL 2+ | https://www.videolan.org/developers/x264.html |
+| x265 | H.265 encoding (inside FFmpeg) | GPL 2+ | https://www.videolan.org/developers/x265.html |
+| Ghostscript | PDF compression, text extraction, page images, grayscale | AGPL 3 | https://ghostscript.com |
+| qpdf | PDF merge, split, rotate, unlock, lossless compression | Apache 2.0 | https://github.com/qpdf/qpdf |
+| Pandoc | Markdown and document conversion | GPL 2+ | https://pandoc.org |
+| 7-Zip (`7zz`) | 7z and RAR extraction | LGPL 2.1+ with unRAR restriction | https://www.7-zip.org |
 
-The GPL and AGPL programs above are redistributed in unmodified form from Homebrew. Their source code is available from
-the project websites listed, and from Homebrew (`brew fetch --build-from-source <name>`). You may also ask the
-DropWheel maintainer for the exact source versions that were packed into a release.
+## Tools used but not bundled
 
-## Optional programs (NOT included)
+These are only used if the user has installed them.
 
-- LibreOffice (spreadsheet / slide / Office conversion): libreoffice.org, MPL 2.0
-- OCRmyPDF (PDF OCR): github.com/ocrmypdf/OCRmyPDF, MPL 2.0
-- pdf2docx (optional): github.com/ArtifexSoftware/pdf2docx
+| Tool | License | Source |
+|---|---|---|
+| LibreOffice | MPL 2.0 | https://www.libreoffice.org |
+| OCRmyPDF | MPL 2.0 | https://github.com/ocrmypdf/OCRmyPDF |
+| pdf2docx | GPL 3 | https://github.com/ArtifexSoftware/pdf2docx |
 
-## macOS built-ins
+## Apple system tools
 
-`sips`, `textutil`, `ditto`, `tar` and Apple's frameworks are part of macOS and are not redistributed.
+`sips`, `textutil`, `ditto`, and `tar` are provided by macOS and are not redistributed.
 
-## Disclaimer
+## Source availability
 
-DropWheel is provided "as is", without warranty of any kind. Conversions and compression
-can change or reduce the quality of your files. Always keep a backup of important files.
-The "Unlock" feature is intended only for files you own or are authorized to modify.
+For any bundled component licensed under the GPL, LGPL, or AGPL, the corresponding source code is available from the upstream project linked above. If you modified or custom-built any of these tools, publish those sources and build instructions in this repository.
